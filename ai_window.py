@@ -158,12 +158,13 @@ class LiveSession(QThread):
     audio_received = pyqtSignal(bytes)
     status_changed = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self, current_volume=100):
         super().__init__()
         self.input_queue = queue.Queue()
         self.running = False
         self.model = "gemini-2.5-flash-native-audio-preview-12-2025"
         self.client = genai.Client(api_key=API_KEY, http_options={'api_version': 'v1beta'})
+        self.current_volume = current_volume
 
     def add_audio_input(self, data):
         self.input_queue.put(data)
@@ -188,7 +189,10 @@ class LiveSession(QThread):
                 # Send initial instruction as the first turn to bypass config issues
                 instruction_text = (
                     "SYSTEM INSTRUCTION: 你是一位視窗助理。當使用者想要改變窗景、聽音樂或搜尋內容時，"
-                    "你必須用溫暖且具描述性語音回覆表示處理中，並在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]]。請不要在思考過程中出現SEARCH_KEYWORD字樣，請全程使用繁體中文。\n"
+                    "你必須用溫暖且具描述性語音回覆表示處理中，並在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]]。"
+                    "當使用者要求調整音量時，請在文字回覆包含 [[VOLUME: 數字]] (範圍 0-100)。"
+                    f"目前背景窗景的音量是 {self.current_volume}%。如果使用者說調大一點或調小一點，請根據此數值調整。"
+                    "請不要在思考過程中出現標籤字樣, 例如SEARCH_KEYWORD或VOLUME，請全程使用繁體中文。\n"
                     "Now, please say something like '你好, 甚麼事呢?'"
                 )
                 await session.send_client_content(
@@ -471,7 +475,11 @@ class AIWindow(QWidget):
                 # DO NOT wait() here! It blocks the UI thread.
                 # The thread will exit on its own once asyncio stops.
 
-            self.live_session = LiveSession()
+            current_vol = self.get_mpv_property("volume")
+            if current_vol is None: current_vol = 100
+            print(f"DEBUG: Current system volume is {current_vol}%")
+
+            self.live_session = LiveSession(current_volume=current_vol)
             self.live_session.text_received.connect(self.on_live_text)
             self.live_session.audio_received.connect(self.player.play)
             self.live_session.status_changed.connect(self.on_live_status)
@@ -566,6 +574,24 @@ class AIWindow(QWidget):
              # Clear buffer to avoid repeated search
              self.current_response_buffer = ""
 
+        elif "[[VOLUME:" in self.current_response_buffer and "]]" in self.current_response_buffer:
+             parts = self.current_response_buffer.split("[[VOLUME:")
+             vol_str = parts[1].split("]]")[0].strip()
+             try:
+                 vol = int(vol_str)
+                 vol = max(0, min(100, vol))
+                 self.send_mpv_command(["set_property", "volume", vol])
+                 print(f"DEBUG: Setting volume to {vol}%")
+                 # Just show a small toast-like message or updating the label
+                 self.label.setText(f"{parts[0]}<br><br><b style='color:#00cbff;'>音量已調整為 {vol}%</b>")
+                 
+                 # Automatically minimize and disconnect after a delay (e.g. 4 seconds)
+                 QTimer.singleShot(4000, lambda: self.set_minimized(True) if self.is_live else None)
+             except:
+                 pass
+             # Note: We clear the buffer to stop re-processing the same tag
+             self.current_response_buffer = ""
+
     def handle_input(self):
         text = self.input_field.text().strip()
         if not text: return
@@ -590,6 +616,22 @@ class AIWindow(QWidget):
                 s.sendall(json_data.encode('utf-8') + b'\n')
         except Exception as e:
             print(f"IPC Error: {e}")
+
+    def get_mpv_property(self, property_name):
+        """獲取 MPV 屬性值"""
+        try:
+            json_data = json.dumps({"command": ["get_property", property_name]})
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.connect(IPC_SOCKET)
+                s.settimeout(0.5)
+                s.sendall(json_data.encode('utf-8') + b'\n')
+                response = s.recv(4096)
+                if response:
+                    data = json.loads(response.decode().strip())
+                    return data.get("data")
+        except Exception as e:
+            print(f"IPC Get Property Error: {e}")
+        return None
 
     def send_to_mpv(self, url):
         """(Legacy wrapper) Load URL"""
