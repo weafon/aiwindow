@@ -181,23 +181,21 @@ class LiveSession(QThread):
         self.status_changed.emit("正在連接 Gemini Live...")
         try:
             config = {
-                "response_modalities": ["AUDIO"],
-                "speech_config": {
-                    "voice_config": {
-                        "prebuilt_voice_config": {
-                            "voice_name": "Zephyr"
-                        }
-                    }
-                }
+                "response_modalities": ["AUDIO"]
             }
             async with self.client.aio.live.connect(model=self.model, config=config) as session:
                 self.status_changed.emit("連線成功！正在叫醒助理...")
                 
-                # Send initial greeting to trigger response
+                # Send initial instruction as the first turn to bypass config issues
+                instruction_text = (
+                    "SYSTEM INSTRUCTION: 你是一位視窗助理。當使用者想要改變窗景、聽音樂或搜尋內容時，"
+                    "你必須在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]] 且語音回應表示處理中。請全程使用繁體中文。\n"
+                    "Now, please say '你好, 甚麼事呢?'."
+                )
                 await session.send_client_content(
                     turns=types.Content(
                         role="user",
-                        parts=[types.Part(text="Hello! Please introduce yourself briefly. RESPOND IN Traditional Chinese. YOU MUST RESPOND UNMISTAKABLY IN Traditional Chinese.")]
+                        parts=[types.Part(text=instruction_text)]
                     ),
                     turn_complete=True
                 )
@@ -238,6 +236,7 @@ class LiveSession(QThread):
                                 if model_turn:
                                     for part in model_turn.parts:
                                         if part.text:
+                                            print(f"DEBUG: Received Text: {part.text}")
                                             self.text_received.emit(part.text)
                                         if part.inline_data:
                                             self.audio_received.emit(part.inline_data.data)
@@ -404,6 +403,8 @@ class AIWindow(QWidget):
         if not self.is_live:
             # Start Live Session
             self.is_live = True
+            self.current_response_buffer = "" # Reset buffer for new session
+            self.label.setText("<i>正在準備通話...</i>")
             self.mic_btn.setStyleSheet("""
                 QPushButton {
                     background-color: rgba(0, 255, 0, 180);
@@ -476,6 +477,9 @@ class AIWindow(QWidget):
              # Found keyword, trigger search
              self.label.setText(f"{parts[0]}<br><br><b style='color:#00ff00;'>正在為您前往：{keyword}...</b>")
              
+             # Stop recording and resume background playback immediately
+             self.toggle_recording()
+             
              self.search_worker = SearchWorker(keyword)
              self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else None)
              self.search_worker.start()
@@ -507,6 +511,7 @@ class AIWindow(QWidget):
 
     def send_to_mpv(self, url):
         """(Legacy wrapper) Load URL"""
+        self.send_mpv_command(["stop"]) # Clear previous state
         self.send_mpv_command(["loadfile", url, "replace"])
 
 
