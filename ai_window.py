@@ -3,6 +3,7 @@ import os
 import signal
 import json
 import socket
+import subprocess
 
 # 修復編碼問題，確保 stdout 和 stderr 使用 UTF-8
 if hasattr(sys.stdout, 'reconfigure'):
@@ -26,14 +27,7 @@ if not API_KEY.isascii():
 client = genai.Client(api_key=API_KEY, http_options={'api_version': 'v1beta'})
 IPC_SOCKET = "/tmp/mpvsocket"
 
-# 定義風景庫，讓 Gemini 有參考依據
-SCENERY_DB = {
-    "京都雨天": "https://www.youtube.com/watch?v=8ELexeiaAwc",
-    "瑞士雪山": "https://www.youtube.com/watch?v=B9VRvOKKwfs",
-    "夏威夷海邊": "https://www.youtube.com/watch?v=4AtJV7U3DlU",
-    "森林小溪": "https://www.youtube.com/watch?v=weOJaCMPvuw",
-    "芬蘭極光": "https://www.youtube.com/watch?v=WL9EOfzoSsA"
-}
+
 
 class GeminiWorker(QThread):
     finished = pyqtSignal(str)
@@ -44,24 +38,20 @@ class GeminiWorker(QThread):
 
     def run(self):
         try:
-            # 建立結構化的 Prompt，確保 AI 遵循指令格式
-            scenery_list = "\n".join([f"- {k}: {v}" for k, v in SCENERY_DB.items()])
+            # 讓 Gemini 變成一個聰明的「搜尋關鍵字生成器」
             prompt = f"""
-            你是一個智慧窗戶助理。用戶說："{self.user_text}"
+            你是一個智慧窗景助理。用戶說："{self.user_text}"
             
-            你的任務：
-            1. 用溫暖且具描述性的文字回覆用戶。
-            2. 如果用戶想更換風景、旅行或看不同的世界，請從下方的「風景庫」選擇一個最適合的。
-            3. 若要換風景，請務必在回覆的最後一行加上：[[CHANGE_VIDEO:網址]]。
+            請執行以下步驟：
+            1. 給用戶一個溫暖的回覆。
+            2. 如果用戶想更換風景（不論是具體地點或僅是心情描述），請想出一個最適合的英文 YouTube 搜尋關鍵字。
+            3. 在回覆最後一行加上：[[SEARCH_KEYWORD:關鍵字]]。
             
-            風景庫：
-            {scenery_list}
-            
-            注意：僅回傳 YouTube 原始網址，不要解析後的長網址。
+            範例：
+            用戶：我想看紐約。
+            回覆：沒問題，帶您去曼哈頓看看。[[SEARCH_KEYWORD:New York City 4K window view]]
             """
-            
             response = client.models.generate_content(
-                #model="gemini-2.0-flash-lite",
                 model="gemini-2.5-flash-lite-preview-09-2025",
                 contents=prompt
             )
@@ -69,10 +59,34 @@ class GeminiWorker(QThread):
         except Exception as e:
             self.finished.emit(f"AI 連線失敗：{str(e)}")
 
+class SearchWorker(QThread):
+    finished = pyqtSignal(str) # 改回傳 URL，或者 None
+
+    def __init__(self, keyword):
+        super().__init__()
+        self.keyword = keyword
+
+    def run(self):
+        print(f"DEBUG: 開始搜尋 {self.keyword}")
+        try:
+            # 限制搜尋結果為 1 個，且加上 4K 關鍵字增加品質
+            # 使用 --no-warnings 避免將警告訊息當作 ID 抓取
+            cmd = ["yt-dlp", "--no-warnings", f"ytsearch1:{self.keyword} 4K window view", "--get-id"]
+            # 不使用 stderr=subprocess.STDOUT，避免捕捉錯誤訊息
+            video_id = subprocess.check_output(cmd).decode().strip()
+            if video_id:
+                self.finished.emit(f"https://www.youtube.com/watch?v={video_id}")
+            else:
+                self.finished.emit("")
+        except Exception as e:
+            print(f"搜尋失敗: {e}")
+            self.finished.emit("")
+
 class AIWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.initUI()
+        self.mpv_process = None
 
     def initUI(self):
         # 視窗屬性：無邊框、最上層、透明背景
@@ -106,7 +120,7 @@ class AIWindow(QWidget):
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setStyleSheet("background: transparent;")
 
-        self.label = QLabel("正在為您開啟窗戶...<br>您可以說「我想去瑞士」或「換成京都」。")
+        self.label = QLabel("正在為您開啟窗戶...<br>您可以說「我想去瑞士」或「我想看雨景」。")
         self.label.setTextFormat(Qt.TextFormat.RichText)
         self.label.setWordWrap(True)
         self.label.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -152,28 +166,38 @@ class AIWindow(QWidget):
             
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
                 s.connect(IPC_SOCKET)
-                # 【關鍵修改】使用 .encode('utf-8') 並確保結尾有換行符號 \n
                 s.sendall(json_data.encode('utf-8') + b'\n')
                 
         except Exception as e:
             print(f"IPC Error: {e}")
 
+
+
     def on_ai_finished(self, response_text):
-        print(f"DEBUG - AI 回傳內容: {repr(response_text)}")  # repr 可以顯示隱藏字元
-        # 處理 AI 回覆與指令
-        
-        if "[[CHANGE_VIDEO:" in response_text:
-            parts = response_text.split("[[CHANGE_VIDEO:")
+        if "[[SEARCH_KEYWORD:" in response_text:
+            parts = response_text.split("[[SEARCH_KEYWORD:")
             clean_msg = parts[0].strip()
-            video_url = parts[1].split("]]")[0].strip()
+            keyword = parts[1].split("]]")[0].strip()
             
-            self.label.setText(f"{clean_msg}<br><br><b style='color:#00ff00;'>助理：</b>正在切換至風景：{video_url}")
-            self.send_to_mpv(video_url)
+            self.label.setText(f"{clean_msg}<br><br><i style='color:#00ff00;'>正在為您尋找：{keyword}...</i>")
+            
+            # 使用 SearchWorker 在背景搜尋，避免 UI 卡住
+            self.search_worker = SearchWorker(keyword)
+            self.search_worker.finished.connect(lambda url: self.on_search_finished(url, clean_msg, keyword))
+            self.search_worker.start()
+
         else:
             self.label.setText(response_text)
             
-        # 滾動到底部
         self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
+
+    def on_search_finished(self, video_url, Clean_msg, keyword):
+        print(f"DEBUG: 搜尋結果 {video_url}")
+        if video_url:
+            self.send_to_mpv(video_url)
+        else:
+            self.label.setText(f"{Clean_msg}<br><br><b style='color:red;'>搜尋失敗，請再試一次。</b>")
+            self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
