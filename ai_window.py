@@ -189,7 +189,7 @@ class LiveSession(QThread):
                 # Send initial instruction as the first turn to bypass config issues
                 instruction_text = (
                     "SYSTEM INSTRUCTION: 你是一位視窗助理。當使用者想要改變窗景、聽音樂或搜尋內容時，"
-                    "你必須在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]] 且語音回應表示處理中。請全程使用繁體中文。\n"
+                    "你必須語音回覆表示處理中，並在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]]。請全程使用繁體中文。\n"
                     "Now, please say '你好, 甚麼事呢?'."
                 )
                 await session.send_client_content(
