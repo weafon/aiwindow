@@ -190,7 +190,7 @@ class LiveSession(QThread):
                 instruction_text = (
                     "SYSTEM INSTRUCTION: 你是一位視窗助理。當使用者想要改變窗景、聽音樂或搜尋內容時，"
                     "你必須語音回覆表示處理中，並在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]]。請全程使用繁體中文。\n"
-                    "Now, please say '你好, 甚麼事呢?'."
+                    "Now, please say something like '你好, 甚麼事呢?'"
                 )
                 await session.send_client_content(
                     turns=types.Content(
@@ -477,8 +477,9 @@ class AIWindow(QWidget):
              # Found keyword, trigger search
              self.label.setText(f"{parts[0]}<br><br><b style='color:#00ff00;'>正在為您前往：{keyword}...</b>")
              
-             # Stop recording and resume background playback immediately
-             self.toggle_recording()
+             # Stop recording and resume background playback after a short delay
+             # to allow the AI to finish its verbal confirmation (e.g. "好的，為您換成瑞士")
+             QTimer.singleShot(6000, lambda: self.toggle_recording() if self.is_live else None)
              
              self.search_worker = SearchWorker(keyword)
              self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else None)
