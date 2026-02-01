@@ -24,22 +24,20 @@ AI Window is a minimalist, transparent window assistant that combines real-time 
   pip install PyQt6 google-genai nest_asyncio
   ```
 
-## 🚀 Setup
+## 🚀 Setup & Launch
 
 1. **Get a Gemini API Key**: Visit the [Google AI Studio](https://aistudio.google.com/) to get your key.
 2. **Set Environment Variable**:
    ```bash
    export GEMINI_API_KEY='your_api_key_here'
    ```
-3. **Start MPV with IPC**:
-   Open a terminal and start MPV with the IPC socket enabled (required for auto-pause):
+3. **Launch the Application**:
+   Everything is automated via the start script. Simply run:
    ```bash
-   mpv --idle --input-ipc-server=/tmp/mpvsocket --background=no --geometry=100%x100%
+   chmod +x start_window.sh
+   ./start_window.sh
    ```
-4. **Run AI Window**:
-   ```bash
-   python3 ai_window.py
-   ```
+   *This script will automatically clear previous sockets, start MPV in the background with a default rainy scene, launch the AI UI, and clean up processes upon exit.*
 
 ## 🎙️ Usage
 
