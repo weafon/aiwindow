@@ -11,7 +11,6 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
 from google import genai
-from google import genai
 from google.genai import types
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QBuffer, QIODevice, QTimer
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -205,8 +204,16 @@ class LiveSession(QThread):
                     while self.running:
                         try:
                             # Non-blocking get from queue
-                            data = self.input_queue.get_nowait()
-                            buffer += data
+                            try:
+                                data = self.input_queue.get_nowait()
+                                buffer += data
+                            except queue.Empty:
+                                # If queue is empty but we have meaningful leftover, send it
+                                if len(buffer) > 0:
+                                    await session.send_realtime_input(audio={"data": buffer, "mime_type": "audio/pcm;rate=16000"})
+                                    buffer = b""
+                                await asyncio.sleep(0.01)
+                                continue
                             
                             # Send only when we have enough data (simulating ~128ms chunk)
                             # 16000 * 2 bytes * 0.128 ~ 4096 bytes
@@ -214,15 +221,10 @@ class LiveSession(QThread):
                                 await session.send_realtime_input(audio={"data": buffer, "mime_type": "audio/pcm;rate=16000"})
                                 buffer = b"" # Clear buffer
                                 
-                        except queue.Empty:
-                            # If queue is empty but we have meaningful leftover, send it
-                            if len(buffer) > 0:
-                                await session.send_realtime_input(audio={"data": buffer, "mime_type": "audio/pcm;rate=16000"})
-                                buffer = b""
-                            await asyncio.sleep(0.01)
                         except Exception as e:
                             print(f"Send Error: {e}")
                             break
+                    print("DEBUG: Sender loop finished.")
                 
                 async def receiver():
                     try:
@@ -241,13 +243,18 @@ class LiveSession(QThread):
                                         if part.inline_data:
                                             self.audio_received.emit(part.inline_data.data)
                     except Exception as e:
-                        print(f"Receive Error: {e}")
+                        if self.running: # Only log if it wasn't a planned stop
+                            print(f"Receive Error: {e}")
+                    print("DEBUG: Receiver loop finished.")
 
                 await asyncio.gather(sender(), receiver())
                 
         except Exception as e:
-            self.status_changed.emit(f"連線錯誤: {e}")
-            print(f"Live Session Error: {e}")
+            if self.running:
+                self.status_changed.emit(f"連線錯誤: {e}")
+                print(f"Live Session Error: {e}")
+            else:
+                print("DEBUG: Live session closed gracefully.")
 
 
 
@@ -257,9 +264,10 @@ class GeminiWorker(QThread):
     # For now, let's keep it but minimal, or assume user mostly uses text for search
     finished = pyqtSignal(str)
     
-    def __init__(self, text):
+    def __init__(self, text, is_audio=False):
         super().__init__()
         self.text = text
+        self.is_audio = is_audio # Added to match AIWindow call
 
     def run(self):
         # Keep original simple text search logic
@@ -312,16 +320,15 @@ class AIWindow(QWidget):
         
         self.recorder = AudioRecorder()
         self.player = AudioPlayer()
-        self.live_session = LiveSession()
+        self.live_session = None # Will instantiate per use
         
         # 2. 建立 UI
         self.initUI()
 
-        # 3. 連結信號
-        self.live_session.text_received.connect(self.on_live_text)
-        self.live_session.audio_received.connect(self.player.play)
-        self.live_session.status_changed.connect(self.on_live_status)
-        self.recorder.audio_data_ready.connect(self.live_session.add_audio_input)
+        # 3. 連結訊號
+        # Note: live_session signals will be connected when created
+        # recorder data signal will also be handled dynamically
+        pass
 
     def initUI(self):
         # 視窗屬性：無邊框、最上層、透明背景
@@ -442,6 +449,7 @@ class AIWindow(QWidget):
 
     def toggle_recording(self):
         if not self.is_live:
+            print("DEBUG: Starting new recording session...")
             # Start Live Session
             self.is_live = True
             self.current_response_buffer = "" # Reset buffer for new session
@@ -455,13 +463,35 @@ class AIWindow(QWidget):
                     border: 2px solid white;
                 }
             """)
+            
+            # Prepare for fresh session instance
+            if self.live_session:
+                print("DEBUG: Stopping previous session...")
+                self.live_session.stop()
+                # DO NOT wait() here! It blocks the UI thread.
+                # The thread will exit on its own once asyncio stops.
+
+            self.live_session = LiveSession()
+            self.live_session.text_received.connect(self.on_live_text)
+            self.live_session.audio_received.connect(self.player.play)
+            self.live_session.status_changed.connect(self.on_live_status)
+            
+            # Reconnect recorder to the NEW session
+            try:
+                self.recorder.audio_data_ready.disconnect()
+            except:
+                pass
+            self.recorder.audio_data_ready.connect(self.live_session.add_audio_input)
+            
+            # Use a tiny delay before starting recorder to ensure session state is ready
             self.live_session.start()
-            self.recorder.start()
+            QTimer.singleShot(100, self.recorder.start)
             
             # Pause Background Music
             self.send_mpv_command(["set_property", "pause", True])
             
         else:
+            print("DEBUG: Stopping recording session...")
             # Stop Live Session
             self.is_live = False
             self.mic_btn.setStyleSheet("""
@@ -474,7 +504,10 @@ class AIWindow(QWidget):
                 }
             """)
             self.recorder.stop()
-            self.live_session.stop()
+            if self.live_session:
+                self.live_session.stop()
+                # We don't necessarily block UI (wait) here unless needed, 
+                # but it will be cleaned up on next start or garbage collected.
             self.label.setText("<i>通話結束</i>")
             
             # Resume Background Music
