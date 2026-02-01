@@ -1,0 +1,13 @@
+# Debug & Test Scripts
+debug*.py
+test*.py
+test.py
+
+# Python Environment
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS Files
+.DS_Store
+Thumbs.db
