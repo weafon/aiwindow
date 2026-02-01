@@ -4,6 +4,8 @@ export DISPLAY=:0
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 export PYTHONIOENCODING=utf-8
+export QT_QPA_PLATFORM=xcb
+export SDL_VIDEODRIVER=x11
 # 1. 清理舊的 Socket
 rm -f /tmp/mpvsocket
 

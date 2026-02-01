@@ -88,8 +88,8 @@ class AudioRecorder(QObject):
             data = self.io_device.readAll()
             if data.size() > 0:
                 self.log_timer += 1
-                if self.log_timer % 20 == 0: # Log every ~20 chunks (approx 2 sec)
-                    print(f"DEBUG: Audio capturing... ({data.size()} bytes)")
+#                if self.log_timer % 20 == 0: # Log every ~20 chunks (approx 2 sec)
+#                    print(f"DEBUG: Audio capturing... ({data.size()} bytes)")
                 self.audio_data_ready.emit(data.data())
 
 class AudioPlayer(QObject):
@@ -305,29 +305,53 @@ class SearchWorker(QThread):
 class AIWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.initUI()
-
+        # 1. 初始化狀態與組件
+        self.is_live = False
+        self.is_minimized = True
         self.mpv_process = None
+        
         self.recorder = AudioRecorder()
         self.player = AudioPlayer()
-        
         self.live_session = LiveSession()
+        
+        # 2. 建立 UI
+        self.initUI()
+
+        # 3. 連結信號
         self.live_session.text_received.connect(self.on_live_text)
         self.live_session.audio_received.connect(self.player.play)
         self.live_session.status_changed.connect(self.on_live_status)
-        
-        # Connect recorder to live session
         self.recorder.audio_data_ready.connect(self.live_session.add_audio_input)
-        
-        self.is_live = False
 
     def initUI(self):
         # 視窗屬性：無邊框、最上層、透明背景
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        main_layout = QVBoxLayout()
+        self.root_layout = QVBoxLayout()
+        self.root_layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.root_layout)
 
+        # --- 1. 泡泡模式 (Minimized) ---
+        self.bubble_btn = QPushButton("🎤")
+        self.bubble_btn.setFixedSize(60, 60)
+        self.bubble_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 180);
+                color: white;
+                font-size: 30px;
+                border-radius: 30px;
+                border: 2px solid rgba(255, 255, 255, 120);
+            }
+            QPushButton:hover { background-color: rgba(0, 0, 0, 220); border: 2px solid white; }
+        """)
+        self.bubble_btn.clicked.connect(lambda: self.set_minimized(False))
+        self.root_layout.addWidget(self.bubble_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # --- 2. 完整模式 (Full UI) ---
+        self.full_ui_widget = QWidget()
+        full_layout = QVBoxLayout(self.full_ui_widget)
+        
         # 頂部列：放置關閉按鈕
         top_bar = QHBoxLayout()
         top_bar.addStretch()
@@ -345,9 +369,9 @@ class AIWindow(QWidget):
         """)
         self.close_btn.clicked.connect(QApplication.quit)
         top_bar.addWidget(self.close_btn)
-        main_layout.addLayout(top_bar)
+        full_layout.addLayout(top_bar)
 
-        # 滾動區域文字顯示
+        # 滾動區域
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -364,12 +388,10 @@ class AIWindow(QWidget):
             font-family: 'Segoe UI', 'Microsoft JhengHei';
         """)
         self.scroll.setWidget(self.label)
-        main_layout.addWidget(self.scroll)
+        full_layout.addWidget(self.scroll)
 
-        # 輸入框
         # 輸入區域
         input_layout = QHBoxLayout()
-
         self.input_field = QLineEdit()
         self.input_field.setPlaceholderText("對助理下指令...")
         self.input_field.setStyleSheet("""
@@ -379,7 +401,7 @@ class AIWindow(QWidget):
         self.input_field.returnPressed.connect(self.handle_input)
         input_layout.addWidget(self.input_field)
 
-        self.mic_btn = QPushButton("🎤") # Use Microphone Icon or Text
+        self.mic_btn = QPushButton("🎤")
         self.mic_btn.setFixedSize(50, 46)
         self.mic_btn.setStyleSheet("""
             QPushButton {
@@ -393,11 +415,30 @@ class AIWindow(QWidget):
         """)
         self.mic_btn.clicked.connect(self.toggle_recording)
         input_layout.addWidget(self.mic_btn)
+        full_layout.addLayout(input_layout)
 
-        main_layout.addLayout(input_layout)
+        self.root_layout.addWidget(self.full_ui_widget)
+        
+        # 初始化為縮小模式
+        self.set_minimized(True)
 
-        self.setLayout(main_layout)
-        self.setGeometry(100, 100, 450, 550)
+    def set_minimized(self, minimized):
+        """切換縮小/展開狀態"""
+        self.is_minimized = minimized
+        if minimized:
+            self.full_ui_widget.hide()
+            self.bubble_btn.show()
+            self.setFixedSize(60, 60)
+            # 如果還在語音，就關掉
+            if self.is_live:
+                self.toggle_recording()
+        else:
+            self.bubble_btn.hide()
+            self.full_ui_widget.show()
+            self.setFixedSize(450, 550)
+            # 自動開始錄音
+            if not self.is_live:
+                self.toggle_recording()
 
     def toggle_recording(self):
         if not self.is_live:
@@ -438,6 +479,10 @@ class AIWindow(QWidget):
             
             # Resume Background Music
             self.send_mpv_command(["set_property", "pause", False])
+            
+            # 手動停止後也自動縮小
+            if not self.is_minimized:
+                self.set_minimized(True)
 
     def on_live_status(self, status):
         self.label.setText(f"<i>{status}</i>")
@@ -479,7 +524,7 @@ class AIWindow(QWidget):
              
              # Stop recording and resume background playback after a short delay
              # to allow the AI to finish its verbal confirmation (e.g. "好的，為您換成瑞士")
-             QTimer.singleShot(6000, lambda: self.toggle_recording() if self.is_live else None)
+             QTimer.singleShot(6000, lambda: self.set_minimized(True) if self.is_live else None)
              
              self.search_worker = SearchWorker(keyword)
              self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else None)
@@ -493,6 +538,9 @@ class AIWindow(QWidget):
         if not text: return
         self.label.setText(f"<b>問：</b>{text}<br><br><i style='color:#ccc;'>正在為您聯繫宇宙...</i>")
         self.input_field.clear()
+        
+        # 文本輸入也自動展開（如果不小心縮小了）
+        if self.is_minimized: self.set_minimized(False)
         
         self.worker = GeminiWorker(text, is_audio=False)
         self.worker.finished.connect(self.on_ai_finished)
