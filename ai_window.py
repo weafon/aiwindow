@@ -11,9 +11,18 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
 from google import genai
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from google import genai
+from google.genai import types
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QBuffer, QIODevice, QTimer
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QLineEdit, QScrollArea, QFrame, QPushButton)
+from PyQt6.QtMultimedia import QAudioSource, QAudioSink, QMediaDevices, QAudioFormat, QAudio
+import struct
+import base64
+import asyncio
+import queue
+import nest_asyncio
+nest_asyncio.apply()
 
 # --- 設定區 ---
 API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -27,37 +36,249 @@ if not API_KEY.isascii():
 client = genai.Client(api_key=API_KEY, http_options={'api_version': 'v1beta'})
 IPC_SOCKET = "/tmp/mpvsocket"
 
+class AudioRecorder(QObject):
+    audio_data_ready = pyqtSignal(bytes)
+
+    def __init__(self):
+        super().__init__()
+        self.format = QAudioFormat()
+        self.format.setSampleRate(16000)
+        self.format.setChannelCount(1)
+        self.format.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+        
+        # Auto-select best device
+        target_device = QMediaDevices.defaultAudioInput()
+        devices = QMediaDevices.audioInputs()
+        
+        print("DEBUG: Scanning Audio Devices...")
+        for dev in devices:
+            name = dev.description()
+            print(f" - Found: {name}")
+            # Prioritize USB Mic or ConferenceCam
+            if "Basic" in name or "Conference" in name or "USB" in name:
+                print(f"DEBUG: Switching to preferred device: {name}")
+                target_device = dev
+                
+        if target_device.isNull():
+            print("ERROR: No valid audio input found.")
+        else:
+            print(f"DEBUG: Using Audio Input: {target_device.description()}")
+
+        self.source = QAudioSource(target_device, self.format)
+        self.io_device = None
+        self.log_timer = 0
+    
+    def start(self):
+        print("DEBUG: Starting AudioRecorder...")
+        self.io_device = self.source.start()
+        if self.source.error() != QAudio.Error.NoError:
+             print(f"ERROR: AudioSource failed to start: {self.source.error()}")
+        
+        self.io_device.readyRead.connect(self.read_data)
+        
+    def stop(self):
+        print("DEBUG: Stopping AudioRecorder...")
+        self.source.stop()
+        if self.io_device:
+            self.io_device.readyRead.disconnect(self.read_data)
+        self.io_device = None
+
+    def read_data(self):
+        if self.io_device:
+            data = self.io_device.readAll()
+            if data.size() > 0:
+                self.log_timer += 1
+                if self.log_timer % 20 == 0: # Log every ~20 chunks (approx 2 sec)
+                    print(f"DEBUG: Audio capturing... ({data.size()} bytes)")
+                self.audio_data_ready.emit(data.data())
+
+class AudioPlayer(QObject):
+    def __init__(self):
+        super().__init__()
+        self.format = QAudioFormat()
+        self.format.setSampleRate(24000) 
+        self.format.setChannelCount(1)
+        self.format.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+        
+        info = QMediaDevices.defaultAudioOutput()
+        print(f"DEBUG: Default Output Device: {info.description()}")
+        if not info.isFormatSupported(self.format):
+            print(f"WARNING: 24000Hz 1ch Int16 not supported. Finding nearest...")
+            self.format = info.preferredFormat()
+            print(f"DEBUG: Nearest format: {self.format.sampleRate()}Hz, {self.format.channelCount()}ch")
+        else:
+            print("DEBUG: 24000Hz format supported!")
+
+        self.sink = QAudioSink(info, self.format)
+        self.sink.setBufferSize(48000) # Internal HW buffer size
+        self.io_device = self.sink.start()
+        
+        # Managed Jitter Buffer
+        self.queue = bytearray()
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.process_queue)
+        self.timer.start(20) # Check every 20ms to push data
+        
+    def play(self, audio_data: bytes):
+        # Accumulate incoming audio blocks
+        self.queue.extend(audio_data)
+        
+        # Latency Capping: If the queue is too long (> 5 seconds)
+        # 24000 samples * 2 bytes = 48000 bytes per second
+        # 48000 * 5 = 240000 bytes
+        if len(self.queue) > 240000:
+            # We are falling dangerously behind. Trim the queue to 1.0s of the latest audio 
+            # to stay relatively in sync without being totally broken.
+            trim_size = len(self.queue) - 48000 
+            self.queue = self.queue[trim_size:]
+            print(f"DEBUG: Audio Latency Spike! Trimmed {trim_size} bytes to catch up.")
+
+    def process_queue(self):
+        if not self.io_device or not self.io_device.isOpen():
+            return
+            
+        # Check how much the hardware buffer can take
+        bytes_free = self.sink.bytesFree()
+        if bytes_free > 4096 and len(self.queue) > 0: # Write in chunks of at least 4k if possible
+            # Write as much as possible, up to what we have in queue
+            to_write = min(bytes_free, len(self.queue))
+            written = self.io_device.write(self.queue[:to_write])
+            if written > 0:
+                self.queue = self.queue[written:]
+        
+        # Periodic Debug
+        if len(self.queue) > 0 and not hasattr(self, "_log_tick"): self._log_tick = 0
+        if len(self.queue) > 0:
+            self._log_tick += 1
+            if self._log_tick % 100 == 0: # Every ~2 seconds of playback effort
+                print(f"DEBUG: Buffer level: {len(self.queue)/48000:.2f}s")
+
+class LiveSession(QThread):
+    finished = pyqtSignal()
+    text_received = pyqtSignal(str)
+    audio_received = pyqtSignal(bytes)
+    status_changed = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.input_queue = queue.Queue()
+        self.running = False
+        self.model = "gemini-2.5-flash-native-audio-preview-12-2025"
+        self.client = genai.Client(api_key=API_KEY, http_options={'api_version': 'v1beta'})
+
+    def add_audio_input(self, data):
+        self.input_queue.put(data)
+
+    def stop(self):
+        self.running = False
+        
+    def run(self):
+        self.running = True
+        asyncio.run(self.aio_run())
+        self.finished.emit()
+
+    async def aio_run(self):
+        self.status_changed.emit("正在連接 Gemini Live...")
+        try:
+            config = {
+                "response_modalities": ["AUDIO"],
+                "speech_config": {
+                    "voice_config": {
+                        "prebuilt_voice_config": {
+                            "voice_name": "Zephyr"
+                        }
+                    }
+                }
+            }
+            async with self.client.aio.live.connect(model=self.model, config=config) as session:
+                self.status_changed.emit("連線成功！正在叫醒助理...")
+                
+                # Send initial greeting to trigger response
+                await session.send_client_content(
+                    turns=types.Content(
+                        role="user",
+                        parts=[types.Part(text="Hello! Please introduce yourself briefly. RESPOND IN Traditional Chinese. YOU MUST RESPOND UNMISTAKABLY IN Traditional Chinese.")]
+                    ),
+                    turn_complete=True
+                )
+                
+                async def sender():
+                    buffer = b""
+                    while self.running:
+                        try:
+                            # Non-blocking get from queue
+                            data = self.input_queue.get_nowait()
+                            buffer += data
+                            
+                            # Send only when we have enough data (simulating ~128ms chunk)
+                            # 16000 * 2 bytes * 0.128 ~ 4096 bytes
+                            if len(buffer) >= 4096:
+                                await session.send_realtime_input(audio={"data": buffer, "mime_type": "audio/pcm;rate=16000"})
+                                buffer = b"" # Clear buffer
+                                
+                        except queue.Empty:
+                            # If queue is empty but we have meaningful leftover, send it
+                            if len(buffer) > 0:
+                                await session.send_realtime_input(audio={"data": buffer, "mime_type": "audio/pcm;rate=16000"})
+                                buffer = b""
+                            await asyncio.sleep(0.01)
+                        except Exception as e:
+                            print(f"Send Error: {e}")
+                            break
+                
+                async def receiver():
+                    try:
+                        while self.running:
+                            async for response in session.receive():
+                                if not self.running: break
+                                if response.server_content is None:
+                                    continue
+                                
+                                model_turn = response.server_content.model_turn
+                                if model_turn:
+                                    for part in model_turn.parts:
+                                        if part.text:
+                                            self.text_received.emit(part.text)
+                                        if part.inline_data:
+                                            self.audio_received.emit(part.inline_data.data)
+                    except Exception as e:
+                        print(f"Receive Error: {e}")
+
+                await asyncio.gather(sender(), receiver())
+                
+        except Exception as e:
+            self.status_changed.emit(f"連線錯誤: {e}")
+            print(f"Live Session Error: {e}")
 
 
-class GeminiWorker(QThread):
+
+
+class GeminiWorker(QThread): 
+    # Keep this for Text-Only Search fallback if needed, or remove? 
+    # For now, let's keep it but minimal, or assume user mostly uses text for search
     finished = pyqtSignal(str)
     
-    def __init__(self, user_text):
+    def __init__(self, text):
         super().__init__()
-        self.user_text = user_text
+        self.text = text
 
     def run(self):
+        # Keep original simple text search logic
         try:
-            # 讓 Gemini 變成一個聰明的「搜尋關鍵字生成器」
-            prompt = f"""
-            你是一個智慧窗景助理。用戶說："{self.user_text}"
-            
-            請執行以下步驟：
-            1. 給用戶一個溫暖的回覆。
-            2. 如果用戶想更換風景（不論是具體地點或僅是心情描述），請想出一個最適合的英文 YouTube 搜尋關鍵字。
-            3. 在回覆最後一行加上：[[SEARCH_KEYWORD:關鍵字]]。
-            
-            範例：
-            用戶：我想看紐約。
-            回覆：沒問題，帶您去曼哈頓看看。[[SEARCH_KEYWORD:New York City 4K window view]]
+             prompt = f"""
+            你是一個智慧窗景助理。用戶說："{self.text}"
+            請給一個搜尋關鍵字。[[SEARCH_KEYWORD:關鍵字]]
             """
-            response = client.models.generate_content(
+             response = client.models.generate_content(
                 model="gemini-2.5-flash-lite-preview-09-2025",
                 contents=prompt
             )
-            self.finished.emit(response.text)
+             self.finished.emit(response.text)
         except Exception as e:
-            self.finished.emit(f"AI 連線失敗：{str(e)}")
+            self.finished.emit(str(e))
+
+    def create_wav_header(self, data_length):
+        pass # Unused now
 
 class SearchWorker(QThread):
     finished = pyqtSignal(str) # 改回傳 URL，或者 None
@@ -86,7 +307,20 @@ class AIWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.initUI()
+
         self.mpv_process = None
+        self.recorder = AudioRecorder()
+        self.player = AudioPlayer()
+        
+        self.live_session = LiveSession()
+        self.live_session.text_received.connect(self.on_live_text)
+        self.live_session.audio_received.connect(self.player.play)
+        self.live_session.status_changed.connect(self.on_live_status)
+        
+        # Connect recorder to live session
+        self.recorder.audio_data_ready.connect(self.live_session.add_audio_input)
+        
+        self.is_live = False
 
     def initUI(self):
         # 視窗屬性：無邊框、最上層、透明背景
@@ -134,6 +368,9 @@ class AIWindow(QWidget):
         main_layout.addWidget(self.scroll)
 
         # 輸入框
+        # 輸入區域
+        input_layout = QHBoxLayout()
+
         self.input_field = QLineEdit()
         self.input_field.setPlaceholderText("對助理下指令...")
         self.input_field.setStyleSheet("""
@@ -141,10 +378,110 @@ class AIWindow(QWidget):
             border-radius: 10px; padding: 12px; font-size: 18px; color: #111;
         """)
         self.input_field.returnPressed.connect(self.handle_input)
-        main_layout.addWidget(self.input_field)
+        input_layout.addWidget(self.input_field)
+
+        self.mic_btn = QPushButton("🎤") # Use Microphone Icon or Text
+        self.mic_btn.setFixedSize(50, 46)
+        self.mic_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 160);
+                color: white;
+                font-size: 20px;
+                border-radius: 23px;
+                border: 2px solid rgba(255, 255, 255, 100);
+            }
+            QPushButton:hover { background-color: rgba(0, 0, 0, 200); }
+        """)
+        self.mic_btn.clicked.connect(self.toggle_recording)
+        input_layout.addWidget(self.mic_btn)
+
+        main_layout.addLayout(input_layout)
 
         self.setLayout(main_layout)
         self.setGeometry(100, 100, 450, 550)
+
+    def toggle_recording(self):
+        if not self.is_live:
+            # Start Live Session
+            self.is_live = True
+            self.mic_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(0, 255, 0, 180);
+                    color: white;
+                    font-size: 20px;
+                    border-radius: 23px;
+                    border: 2px solid white;
+                }
+            """)
+            self.live_session.start()
+            self.recorder.start()
+            
+            # Pause Background Music
+            self.send_mpv_command(["set_property", "pause", True])
+            
+        else:
+            # Stop Live Session
+            self.is_live = False
+            self.mic_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(0, 0, 0, 160);
+                    color: white;
+                    font-size: 20px;
+                    border-radius: 23px;
+                    border: 2px solid rgba(255, 255, 255, 100);
+                }
+            """)
+            self.recorder.stop()
+            self.live_session.stop()
+            self.label.setText("<i>通話結束</i>")
+            
+            # Resume Background Music
+            self.send_mpv_command(["set_property", "pause", False])
+
+    def on_live_status(self, status):
+        self.label.setText(f"<i>{status}</i>")
+
+    def on_live_text(self, text):
+        # Handle keywords for search
+        # Note: LiveAPI text chunks come in small pieces. We might need to buffer or check continuously.
+        # But for simplicity, let's just append to label and check if we have received a full keyword tag.
+        
+        current_text = self.label.text()
+        # Remove HTML tags for clean checking logic if needed, but here simple appending
+        
+        # Update UI with new text (streaming)
+        # Note: self.label.setText overwrites, so we should append?
+        # But text comes in chunks.
+        # A simple strategy: Just display what we get, or keep a running buffer.
+        
+        # For this prototype: Just check if the text CONTAINS the keyword marker.
+        # Since it's streaming, it might be split across chunks. 
+        # But Gemini usually emits the tag in one go or we can detect it.
+        
+        # Let's just update label to show conversation.
+        # And scan for keyword.
+        
+        # Better approach: store latest response in a buffer variable
+        if not hasattr(self, "current_response_buffer"):
+            self.current_response_buffer = ""
+            
+        self.current_response_buffer += text
+        self.label.setText(f"{self.current_response_buffer}")
+        self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
+
+        if "[[SEARCH_KEYWORD:" in self.current_response_buffer and "]]" in self.current_response_buffer:
+             parts = self.current_response_buffer.split("[[SEARCH_KEYWORD:")
+             keyword = parts[1].split("]]")[0].strip()
+             
+             # Found keyword, trigger search
+             self.label.setText(f"{parts[0]}<br><br><b style='color:#00ff00;'>正在為您前往：{keyword}...</b>")
+             
+             self.search_worker = SearchWorker(keyword)
+             self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else None)
+             self.search_worker.start()
+             
+             # Clear buffer to avoid repeated search
+             self.current_response_buffer = ""
 
     def handle_input(self):
         text = self.input_field.text().strip()
@@ -152,24 +489,25 @@ class AIWindow(QWidget):
         self.label.setText(f"<b>問：</b>{text}<br><br><i style='color:#ccc;'>正在為您聯繫宇宙...</i>")
         self.input_field.clear()
         
-        self.worker = GeminiWorker(text)
+        self.worker = GeminiWorker(text, is_audio=False)
         self.worker.finished.connect(self.on_ai_finished)
+        # Note: Text input might also get audio response if configure to
+        self.worker.audio_ready.connect(self.player.play) 
         self.worker.start()
 
-    def send_to_mpv(self, url):
-        """透過 Unix Domain Socket 發送 JSON 指令給 mpv"""
+    def send_mpv_command(self, cmd_list):
+        """通用 MPV 指令發送"""
         try:
-            # 建立指令字典
-            cmd = {"command": ["loadfile", url, "replace"]}
-            # 將字典轉為 JSON 字串
-            json_data = json.dumps(cmd) 
-            
+            json_data = json.dumps({"command": cmd_list})
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
                 s.connect(IPC_SOCKET)
                 s.sendall(json_data.encode('utf-8') + b'\n')
-                
         except Exception as e:
             print(f"IPC Error: {e}")
+
+    def send_to_mpv(self, url):
+        """(Legacy wrapper) Load URL"""
+        self.send_mpv_command(["loadfile", url, "replace"])
 
 
 
