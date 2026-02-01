@@ -181,18 +181,24 @@ class LiveSession(QThread):
         self.status_changed.emit("正在連接 Gemini Live...")
         try:
             config = {
-                "response_modalities": ["AUDIO"]
+                "response_modalities": ["AUDIO"],
+                "tools": [{"google_search": {}}],
+                "input_audio_transcription": {},
+                "output_audio_transcription": {}
             }
             async with self.client.aio.live.connect(model=self.model, config=config) as session:
                 self.status_changed.emit("連線成功！正在叫醒助理...")
                 
                 # Send initial instruction as the first turn to bypass config issues
                 instruction_text = (
-                    "SYSTEM INSTRUCTION: 你是一位視窗助理。當使用者想要改變窗景、聽音樂或搜尋內容時，"
+                    "SYSTEM INSTRUCTION: 你是一位視窗助理。"
+					"請不要在還沒決定搜尋詞或音量時, 就先輸出標籤字樣, 例如SEARCH_KEYWORD或VOLUME。"
+					"當使用者想要改變窗景、聽音樂，"
                     "你必須用溫暖且具描述性語音回覆表示處理中，並在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]]。"
                     "當使用者要求調整音量時，請在文字回覆包含 [[VOLUME: 數字]] (範圍 0-100)。"
                     f"目前背景窗景的音量是 {self.current_volume}%。如果使用者說調大一點或調小一點，請根據此數值調整。"
-                    "請不要在思考過程中出現標籤字樣, 例如SEARCH_KEYWORD或VOLUME, 請全程使用繁體中文。\n"
+					"當使用者要進行其他跟窗景無關的搜尋時, 例如股票或天氣時, 請直接調用google search獲取資料, 並用溫暖且具描述性語音回覆。"
+                    "請全程使用繁體中文。\n"
                     "Now, please say something like '你好, 甚麼事呢?'"
                 )
                 await session.send_client_content(
@@ -237,7 +243,10 @@ class LiveSession(QThread):
                                 if not self.running: break
                                 if response.server_content is None:
                                     continue
-                                
+#                                output_transcription = response.server_content.output_transcription
+#                                if output_transcription:
+#                                    print(f"DEBUG: Received Output Transcription: {output_transcription}")
+
                                 model_turn = response.server_content.model_turn
                                 if model_turn:
                                     for part in model_turn.parts:
