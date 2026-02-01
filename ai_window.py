@@ -192,7 +192,7 @@ class LiveSession(QThread):
                     "你必須用溫暖且具描述性語音回覆表示處理中，並在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]]。"
                     "當使用者要求調整音量時，請在文字回覆包含 [[VOLUME: 數字]] (範圍 0-100)。"
                     f"目前背景窗景的音量是 {self.current_volume}%。如果使用者說調大一點或調小一點，請根據此數值調整。"
-                    "請不要在思考過程中出現標籤字樣, 例如SEARCH_KEYWORD或VOLUME，請全程使用繁體中文。\n"
+                    "請不要在思考過程中出現標籤字樣, 例如SEARCH_KEYWORD或VOLUME, 請全程使用繁體中文。\n"
                     "Now, please say something like '你好, 甚麼事呢?'"
                 )
                 await session.send_client_content(
@@ -242,10 +242,15 @@ class LiveSession(QThread):
                                 if model_turn:
                                     for part in model_turn.parts:
                                         if part.text:
-                                            print(f"DEBUG: Received Text: {part.text}")
+                                            # Ensure we're only emitting text that is clearly model output
+                                            print(f"DEBUG: Received Model Text Chunks: {part.text}")
                                             self.text_received.emit(part.text)
                                         if part.inline_data:
                                             self.audio_received.emit(part.inline_data.data)
+                                
+                                # Handling other content types like transcriptions if needed
+                                # if response.server_content.interruption:
+                                #     print("DEBUG: Interruption detected.")
                     except Exception as e:
                         if self.running: # Only log if it wasn't a planned stop
                             print(f"Receive Error: {e}")
@@ -319,7 +324,7 @@ class AIWindow(QWidget):
         super().__init__()
         # 1. 初始化狀態與組件
         self.is_live = False
-        self.is_minimized = True
+        self.is_minimized = False
         self.mpv_process = None
         
         self.recorder = AudioRecorder()
@@ -430,8 +435,8 @@ class AIWindow(QWidget):
 
         self.root_layout.addWidget(self.full_ui_widget)
         
-        # 初始化為縮小模式
-        self.set_minimized(True)
+        # 初始化為展開模式並啟動連線
+        self.set_minimized(False)
 
     def set_minimized(self, minimized):
         """切換縮小/展開狀態"""
