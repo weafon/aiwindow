@@ -35,6 +35,22 @@ if not API_KEY.isascii():
 client = genai.Client(api_key=API_KEY, http_options={'api_version': 'v1beta'})
 IPC_SOCKET = "/tmp/mpvsocket"
 
+def change_scene(keyword: str):
+    """切換窗景或聽音樂，指定搜尋關鍵字。
+
+    Args:
+        keyword: 搜尋關鍵字，例如 '瑞士'、'雨聲'、'爵士樂'
+    """
+    return {"status": "success", "keyword": keyword}
+
+def set_volume(volume: int):
+    """調整窗景背景音量。
+
+    Args:
+        volume: 音量大小 (0-100)
+    """
+    return {"status": "success", "volume": volume}
+
 class AudioRecorder(QObject):
     audio_data_ready = pyqtSignal(bytes)
 
@@ -157,6 +173,8 @@ class LiveSession(QThread):
     text_received = pyqtSignal(str)
     audio_received = pyqtSignal(bytes)
     status_changed = pyqtSignal(str)
+    search_requested = pyqtSignal(str)
+    volume_requested = pyqtSignal(int)
 
     def __init__(self, current_volume=100):
         super().__init__()
@@ -182,7 +200,7 @@ class LiveSession(QThread):
         try:
             config = {
                 "response_modalities": ["AUDIO"],
-                "tools": [{"google_search": {}}],
+                "tools": [change_scene, set_volume, {"google_search": {}}],
                 "input_audio_transcription": {},
                 "output_audio_transcription": {}
             }
@@ -192,10 +210,9 @@ class LiveSession(QThread):
                 # Send initial instruction as the first turn to bypass config issues
                 instruction_text = (
                     "SYSTEM INSTRUCTION: 你是一位視窗助理。"
-					"請不要在還沒決定搜尋詞或音量時, 就先輸出標籤字樣, 例如SEARCH_KEYWORD或VOLUME。"
 					"當使用者想要改變窗景、聽音樂，"
-                    "你必須用溫暖且具描述性語音回覆表示處理中，並在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]]。"
-                    "當使用者要求調整音量時，請在文字回覆包含 [[VOLUME: 數字]] (範圍 0-100)。"
+                    "你必須用溫暖且具描述性語音回覆表示處理中，並調用 change_scene 工具。"
+                    "當使用者要求調整音量時，請調用 set_volume 工具。"
                     f"目前背景窗景的音量是 {self.current_volume}%。如果使用者說調大一點或調小一點，請根據此數值調整。"
 					"當使用者要進行其他跟窗景無關的搜尋時, 例如股票或天氣時, 請直接調用google search獲取資料, 並用溫暖且具描述性語音回覆。"
                     "請全程使用繁體中文。\n"
@@ -256,6 +273,30 @@ class LiveSession(QThread):
                                             self.text_received.emit(part.text)
                                         if part.inline_data:
                                             self.audio_received.emit(part.inline_data.data)
+                                        if part.call:
+                                            call = part.call
+                                            print(f"DEBUG: Tool Call Received: {call.name} with {call.args}")
+                                            if call.name == "change_scene":
+                                                keyword = call.args.get("keyword")
+                                                if keyword:
+                                                    self.search_requested.emit(keyword)
+                                            elif call.name == "set_volume":
+                                                vol = call.args.get("volume")
+                                                if vol is not None:
+                                                    self.volume_requested.emit(int(vol))
+
+                                            # Send response back to satisfy the model
+                                            await session.send(
+                                                input=types.LiveClientToolResponse(
+                                                    function_responses=[
+                                                        types.FunctionResponse(
+                                                            name=call.name,
+                                                            id=call.id,
+                                                            response={"status": "success"}
+                                                        )
+                                                    ]
+                                                )
+                                            )
                                 
                                 # Handling other content types like transcriptions if needed
                                 # if response.server_content.interruption:
@@ -281,6 +322,9 @@ class GeminiWorker(QThread):
     # Keep this for Text-Only Search fallback if needed, or remove? 
     # For now, let's keep it but minimal, or assume user mostly uses text for search
     finished = pyqtSignal(str)
+    search_requested = pyqtSignal(str)
+    volume_requested = pyqtSignal(int)
+    audio_ready = pyqtSignal(bytes) # Added to prevent potential error in AIWindow
     
     def __init__(self, text, is_audio=False):
         super().__init__()
@@ -288,17 +332,41 @@ class GeminiWorker(QThread):
         self.is_audio = is_audio # Added to match AIWindow call
 
     def run(self):
-        # Keep original simple text search logic
+        # Updated to use function calling
         try:
-             prompt = f"""
-            你是一個智慧窗景助理。用戶說："{self.text}"
-            請給一個搜尋關鍵字。[[SEARCH_KEYWORD:關鍵字]]
-            """
              response = client.models.generate_content(
-                model="gemini-2.5-flash-lite-preview-09-2025",
-                contents=prompt
+                model="gemini-2.0-flash",
+                contents=self.text,
+                config=types.GenerateContentConfig(
+                    tools=[change_scene, set_volume, {"google_search": {}}],
+                    system_instruction="你是一個智慧窗景助理。請使用工具來切換窗景或調整音量。請全程使用繁體中文。"
+                )
             )
-             self.finished.emit(response.text)
+
+             found_tool = False
+             text_response = response.text or ""
+
+             # 先發送文字回應，讓 UI 更新 buffer
+             if text_response:
+                 self.finished.emit(text_response)
+
+             if response.candidates and response.candidates[0].content.parts:
+                 for part in response.candidates[0].content.parts:
+                     if part.function_call:
+                         call = part.function_call
+                         if call.name == "change_scene":
+                             keyword = call.args.get("keyword")
+                             if keyword:
+                                 self.search_requested.emit(keyword)
+                                 found_tool = True
+                         elif call.name == "set_volume":
+                             vol = call.args.get("volume")
+                             if vol is not None:
+                                 self.volume_requested.emit(int(vol))
+                                 found_tool = True
+
+             if not text_response:
+                 self.finished.emit("正在處理中..." if found_tool else "未收到回應")
         except Exception as e:
             self.finished.emit(str(e))
 
@@ -497,6 +565,8 @@ class AIWindow(QWidget):
             self.live_session.text_received.connect(self.on_live_text)
             self.live_session.audio_received.connect(self.player.play)
             self.live_session.status_changed.connect(self.on_live_status)
+            self.live_session.search_requested.connect(self.on_search_requested)
+            self.live_session.volume_requested.connect(self.on_volume_requested)
             
             # Reconnect recorder to the NEW session
             try:
@@ -542,69 +612,45 @@ class AIWindow(QWidget):
     def on_live_status(self, status):
         self.label.setText(f"<i>{status}</i>")
 
+    def on_search_requested(self, keyword):
+        """處理切換窗景需求"""
+        print(f"DEBUG: Search Requested: {keyword}")
+        prefix = getattr(self, "current_response_buffer", "")
+        self.label.setText(f"{prefix}<br><br><b style='color:#00ff00;'>正在為您前往：{keyword}...</b>")
+        
+        # Stop recording and resume background playback after a short delay
+        QTimer.singleShot(6000, lambda: self.set_minimized(True) if self.is_live else None)
+        
+        self.search_worker = SearchWorker(keyword)
+        self.search_worker.finished.connect(lambda url: self.on_search_finished(url, prefix, keyword))
+        self.search_worker.start()
+        
+        # Clear buffer to avoid repeated search
+        self.current_response_buffer = ""
+
+    def on_volume_requested(self, vol):
+        """處理音量調整需求"""
+        print(f"DEBUG: Volume Requested: {vol}")
+        vol = max(0, min(100, vol))
+        self.send_mpv_command(["set_property", "volume", vol])
+        
+        prefix = getattr(self, "current_response_buffer", "")
+        self.label.setText(f"{prefix}<br><br><b style='color:#00cbff;'>音量已調整為 {vol}%</b>")
+
+        # Automatically minimize and disconnect after a delay
+        QTimer.singleShot(4000, lambda: self.set_minimized(True) if self.is_live else None)
+        self.current_response_buffer = ""
+
     def on_live_text(self, text):
-        # Handle keywords for search
-        # Note: LiveAPI text chunks come in small pieces. We might need to buffer or check continuously.
-        # But for simplicity, let's just append to label and check if we have received a full keyword tag.
+        # Now we just update the label with streaming text.
+        # Searching and volume are handled by on_search_requested and on_volume_requested.
         
-        current_text = self.label.text()
-        # Remove HTML tags for clean checking logic if needed, but here simple appending
-        
-        # Update UI with new text (streaming)
-        # Note: self.label.setText overwrites, so we should append?
-        # But text comes in chunks.
-        # A simple strategy: Just display what we get, or keep a running buffer.
-        
-        # For this prototype: Just check if the text CONTAINS the keyword marker.
-        # Since it's streaming, it might be split across chunks. 
-        # But Gemini usually emits the tag in one go or we can detect it.
-        
-        # Let's just update label to show conversation.
-        # And scan for keyword.
-        
-        # Better approach: store latest response in a buffer variable
         if not hasattr(self, "current_response_buffer"):
             self.current_response_buffer = ""
             
         self.current_response_buffer += text
         self.label.setText(f"{self.current_response_buffer}")
         self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
-
-        if "[[SEARCH_KEYWORD:" in self.current_response_buffer and "]]" in self.current_response_buffer:
-             parts = self.current_response_buffer.split("[[SEARCH_KEYWORD:")
-             keyword = parts[1].split("]]")[0].strip()
-             
-             # Found keyword, trigger search
-             self.label.setText(f"{parts[0]}<br><br><b style='color:#00ff00;'>正在為您前往：{keyword}...</b>")
-             
-             # Stop recording and resume background playback after a short delay
-             # to allow the AI to finish its verbal confirmation (e.g. "好的，為您換成瑞士")
-             QTimer.singleShot(6000, lambda: self.set_minimized(True) if self.is_live else None)
-             
-             self.search_worker = SearchWorker(keyword)
-             self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else None)
-             self.search_worker.start()
-             
-             # Clear buffer to avoid repeated search
-             self.current_response_buffer = ""
-
-        elif "[[VOLUME:" in self.current_response_buffer and "]]" in self.current_response_buffer:
-             parts = self.current_response_buffer.split("[[VOLUME:")
-             vol_str = parts[1].split("]]")[0].strip()
-             try:
-                 vol = int(vol_str)
-                 vol = max(0, min(100, vol))
-                 self.send_mpv_command(["set_property", "volume", vol])
-                 print(f"DEBUG: Setting volume to {vol}%")
-                 # Just show a small toast-like message or updating the label
-                 self.label.setText(f"{parts[0]}<br><br><b style='color:#00cbff;'>音量已調整為 {vol}%</b>")
-                 
-                 # Automatically minimize and disconnect after a delay (e.g. 4 seconds)
-                 QTimer.singleShot(4000, lambda: self.set_minimized(True) if self.is_live else None)
-             except:
-                 pass
-             # Note: We clear the buffer to stop re-processing the same tag
-             self.current_response_buffer = ""
 
     def handle_input(self):
         text = self.input_field.text().strip()
@@ -615,8 +661,13 @@ class AIWindow(QWidget):
         # 文本輸入也自動展開（如果不小心縮小了）
         if self.is_minimized: self.set_minimized(False)
         
+        # 重置 Live 模式下可能留下的 buffer
+        self.current_response_buffer = ""
+
         self.worker = GeminiWorker(text, is_audio=False)
         self.worker.finished.connect(self.on_ai_finished)
+        self.worker.search_requested.connect(self.on_search_requested)
+        self.worker.volume_requested.connect(self.on_volume_requested)
         # Note: Text input might also get audio response if configure to
         self.worker.audio_ready.connect(self.player.play) 
         self.worker.start()
@@ -655,19 +706,9 @@ class AIWindow(QWidget):
 
 
     def on_ai_finished(self, response_text):
-        if "[[SEARCH_KEYWORD:" in response_text:
-            parts = response_text.split("[[SEARCH_KEYWORD:")
-            clean_msg = parts[0].strip()
-            keyword = parts[1].split("]]")[0].strip()
-            
-            self.label.setText(f"{clean_msg}<br><br><i style='color:#00ff00;'>正在為您尋找：{keyword}...</i>")
-            
-            # 使用 SearchWorker 在背景搜尋，避免 UI 卡住
-            self.search_worker = SearchWorker(keyword)
-            self.search_worker.finished.connect(lambda url: self.on_search_finished(url, clean_msg, keyword))
-            self.search_worker.start()
-
-        else:
+        # Tools are already handled by signals. Here we just show the final text response.
+        if response_text:
+            self.current_response_buffer = response_text
             self.label.setText(response_text)
             
         self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
