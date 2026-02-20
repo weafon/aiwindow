@@ -198,32 +198,32 @@ class LiveSession(QThread):
     async def aio_run(self):
         self.status_changed.emit("正在連接 Gemini Live...")
         try:
-            config = {
-                "response_modalities": ["AUDIO"],
-                "tools": [change_scene, set_volume, {"google_search": {}}],
-                "input_audio_transcription": {},
-                "output_audio_transcription": {}
-            }
+            instruction_text = (
+                "你是一位視窗助理。"
+                "當使用者想要改變窗景、聽音樂，"
+                "你必須用溫暖且具描述性語音回覆表示處理中，並調用 change_scene 工具。"
+                "當使用者要求調整音量時，請調用 set_volume 工具。"
+                f"目前背景窗景的音量是 {self.current_volume}%。如果使用者說調大一點或調小一點，請根據此數值調整。"
+                "當使用者要進行其他跟窗景無關的搜尋時, 例如股票或天氣時, 請直接調用google search獲取資料, 並用溫暖且具描述性語音回覆。"
+                "請全程使用繁體中文。"
+            )
+            config = types.LiveConnectConfig(
+                response_modalities=["AUDIO"],
+                tools=[change_scene, set_volume, {"google_search": {}}],
+                system_instruction=types.Content(parts=[types.Part(text=instruction_text)])
+            )
             async with self.client.aio.live.connect(model=self.model, config=config) as session:
                 self.status_changed.emit("連線成功！正在叫醒助理...")
                 
-                # Send initial instruction as the first turn to bypass config issues
-                instruction_text = (
-                    "SYSTEM INSTRUCTION: 你是一位視窗助理。"
-					"當使用者想要改變窗景、聽音樂，"
-                    "你必須用溫暖且具描述性語音回覆表示處理中，並調用 change_scene 工具。"
-                    "當使用者要求調整音量時，請調用 set_volume 工具。"
-                    f"目前背景窗景的音量是 {self.current_volume}%。如果使用者說調大一點或調小一點，請根據此數值調整。"
-					"當使用者要進行其他跟窗景無關的搜尋時, 例如股票或天氣時, 請直接調用google search獲取資料, 並用溫暖且具描述性語音回覆。"
-                    "請全程使用繁體中文。\n"
-                    "Now, please say something like '你好, 甚麼事呢?'"
-                )
-                await session.send_client_content(
-                    turns=types.Content(
-                        role="user",
-                        parts=[types.Part(text=instruction_text)]
+                # We ask for a greeting via a simple user message to trigger the model
+                await session.send(
+                    input=types.LiveClientContent(
+                        turns=[types.Content(
+                            role="user",
+                            parts=[types.Part(text="你好, 請跟我打招呼並開始服務。")]
+                        )]
                     ),
-                    turn_complete=True
+                    end_of_turn=True
                 )
                 
                 async def sender():
@@ -264,39 +264,48 @@ class LiveSession(QThread):
 #                                if output_transcription:
 #                                    print(f"DEBUG: Received Output Transcription: {output_transcription}")
 
+                                if response.server_content.interrupted:
+                                    print("DEBUG: Interruption detected.")
+                                    # Optional: Stop playing current audio or clear buffer
+                                    continue
+
                                 model_turn = response.server_content.model_turn
                                 if model_turn:
                                     for part in model_turn.parts:
                                         if part.text:
-                                            # Ensure we're only emitting text that is clearly model output
                                             print(f"DEBUG: Received Model Text Chunks: {part.text}")
                                             self.text_received.emit(part.text)
                                         if part.inline_data:
                                             self.audio_received.emit(part.inline_data.data)
-                                        if part.call:
-                                            call = part.call
-                                            print(f"DEBUG: Tool Call Received: {call.name} with {call.args}")
-                                            if call.name == "change_scene":
-                                                keyword = call.args.get("keyword")
-                                                if keyword:
-                                                    self.search_requested.emit(keyword)
-                                            elif call.name == "set_volume":
-                                                vol = call.args.get("volume")
-                                                if vol is not None:
-                                                    self.volume_requested.emit(int(vol))
 
-                                            # Send response back to satisfy the model
-                                            await session.send(
-                                                input=types.LiveClientToolResponse(
-                                                    function_responses=[
-                                                        types.FunctionResponse(
-                                                            name=call.name,
-                                                            id=call.id,
-                                                            response={"status": "success"}
-                                                        )
-                                                    ]
-                                                )
-                                            )
+                            if response.tool_call:
+                                f_responses = []
+                                for fc in response.tool_call.function_calls:
+                                    print(f"DEBUG: Tool Call Received: {fc.name} with {fc.args}")
+                                    if fc.name == "change_scene":
+                                        keyword = fc.args.get("keyword")
+                                        if keyword:
+                                            self.search_requested.emit(keyword)
+                                    elif fc.name == "set_volume":
+                                        vol = fc.args.get("volume")
+                                        if vol is not None:
+                                            self.current_volume = int(vol)
+                                            self.volume_requested.emit(self.current_volume)
+
+                                    f_responses.append(
+                                        types.FunctionResponse(
+                                            name=fc.name,
+                                            id=fc.id,
+                                            response={"status": "success"}
+                                        )
+                                    )
+
+                                if f_responses:
+                                    await session.send(
+                                        input=types.LiveClientToolResponse(
+                                            function_responses=f_responses
+                                        )
+                                    )
                                 
                                 # Handling other content types like transcriptions if needed
                                 # if response.server_content.interruption:
@@ -575,9 +584,10 @@ class AIWindow(QWidget):
                 pass
             self.recorder.audio_data_ready.connect(self.live_session.add_audio_input)
             
-            # Use a tiny delay before starting recorder to ensure session state is ready
+            # Use a delay before starting recorder to ensure session state is ready
+            # and initial greeting isn't immediately interrupted by background noise.
             self.live_session.start()
-            QTimer.singleShot(100, self.recorder.start)
+            QTimer.singleShot(1000, self.recorder.start)
             
             # Pause Background Music
             self.send_mpv_command(["set_property", "pause", True])
@@ -617,7 +627,7 @@ class AIWindow(QWidget):
         print(f"DEBUG: Search Requested: {keyword}")
         prefix = getattr(self, "current_response_buffer", "")
         self.label.setText(f"{prefix}<br><br><b style='color:#00ff00;'>正在為您前往：{keyword}...</b>")
-        
+
         # Stop recording and resume background playback after a short delay
         QTimer.singleShot(6000, lambda: self.set_minimized(True) if self.is_live else None)
         
