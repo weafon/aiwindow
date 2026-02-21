@@ -12,7 +12,9 @@ rm -f /tmp/mpvsocket
 # 2. 啟動 mpv 並開啟 IPC 功能 (背景執行)
 # 預設先播京都雨天
 echo "啟動窗景播放器..."
-mpv --fs --loop=inf --input-ipc-server=/tmp/mpvsocket "https://www.youtube.com/watch?v=akUYfKwlo0E" 2> /dev/null &
+#export url="https://www.youtube.com/watch?v=ROgRn3WuLN0"
+export url="https://www.youtube.com/watch?v=akUYfKwlo0E"
+mpv --fs --loop=inf --input-ipc-server=/tmp/mpvsocket $url > /dev/null &
 MPV_PID=$!
 
 # 3. 啟動 AI UI
