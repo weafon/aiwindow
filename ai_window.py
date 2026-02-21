@@ -34,6 +34,62 @@ if not API_KEY.isascii():
 
 client = genai.Client(api_key=API_KEY, http_options={'api_version': 'v1beta'})
 IPC_SOCKET = "/tmp/mpvsocket"
+def change_scene(keyword: str):
+    """切換窗景或聽音樂，指定搜尋關鍵字。
+
+    Args:
+        keyword: 搜尋關鍵字，例如 '瑞士'、'雨聲'、'爵士樂'
+    """
+    try:
+        # Use yt-dlp to search for a suitable YouTube video (prefer 4K/window view)
+        cmd = [
+            "yt-dlp",
+            "--no-warnings",
+            f"ytsearch1:{keyword} 4K window view",
+            "--get-id",
+        ]
+        try:
+            video_id = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+        except subprocess.CalledProcessError:
+            video_id = ""
+
+        if not video_id:
+            return {"status": "error", "error": "no_search_results", "keyword": keyword}
+
+        url = f"https://www.youtube.com/watch?v={video_id}"
+
+        # Send MPV IPC commands to stop current playback and load the new URL
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.connect(IPC_SOCKET)
+                s.sendall(json.dumps({"command": ["stop"]}).encode("utf-8") + b"\n")
+                s.sendall(json.dumps({"command": ["loadfile", url, "replace"]}).encode("utf-8") + b"\n")
+        except Exception as e:
+            return {"status": "error", "error": f"ipc_error: {e}", "url": url}
+
+        return {"status": "success", "keyword": keyword, "url": url}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+def set_volume(volume: int):
+    """調整窗景背景音量。
+
+    Args:
+        volume: 音量大小 (0-100)
+    """
+    try:
+        vol = int(volume)
+        vol = max(0, min(100, vol))
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.connect(IPC_SOCKET)
+                s.sendall(json.dumps({"command": ["set_property", "volume", vol]}).encode("utf-8") + b"\n")
+        except Exception as e:
+            return {"status": "error", "error": f"ipc_error: {e}", "volume": vol}
+
+        return {"status": "success", "volume": vol}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 class AudioRecorder(QObject):
     audio_data_ready = pyqtSignal(bytes)
@@ -182,7 +238,7 @@ class LiveSession(QThread):
         try:
             config = {
                 "response_modalities": ["AUDIO"],
-                "tools": [{"google_search": {}}],
+                "tools": [change_scene, set_volume, {"google_search": {}}],
                 "input_audio_transcription": {},
                 "output_audio_transcription": {}
             }
@@ -192,10 +248,8 @@ class LiveSession(QThread):
                 # Send initial instruction as the first turn to bypass config issues
                 instruction_text = (
                     "SYSTEM INSTRUCTION: 你是一位視窗助理。"
-					"請不要在還沒決定搜尋詞或音量時, 就先輸出標籤字樣, 例如SEARCH_KEYWORD或VOLUME。"
-					"當使用者想要改變窗景、聽音樂，"
-                    "你必須用溫暖且具描述性語音回覆表示處理中，並在文字回覆包含 [[SEARCH_KEYWORD: 搜尋詞]]。"
-                    "當使用者要求調整音量時，請在文字回覆包含 [[VOLUME: 數字]] (範圍 0-100)。"
+					"當使用者想要改變窗景、聽音樂，你必須回覆表示處理中，並調用change_scene工具。"
+                	"當使用者要求調整音量時，請調用 set_volume 工具。"
                     f"目前背景窗景的音量是 {self.current_volume}%。如果使用者說調大一點或調小一點，請根據此數值調整。"
 					"當使用者要進行其他跟窗景無關的搜尋時, 例如股票或天氣時, 請直接調用google search獲取資料, 並用溫暖且具描述性語音回覆。"
                     "請全程使用繁體中文。\n"
@@ -260,6 +314,34 @@ class LiveSession(QThread):
                                 # Handling other content types like transcriptions if needed
                                 # if response.server_content.interruption:
                                 #     print("DEBUG: Interruption detected.")
+                            if response.tool_call:
+                                f_responses = []
+                                for fc in response.tool_call.function_calls:
+                                    print(f"DEBUG: Tool Call Received: {fc.name} with {fc.args}")
+                                    if fc.name == "change_scene":
+                                        keyword = fc.args.get("keyword")
+                                        if keyword:
+                                            self.search_requested.emit(keyword)
+                                    elif fc.name == "set_volume":
+                                        vol = fc.args.get("volume")
+                                        if vol is not None:
+                                            self.current_volume = int(vol)
+                                            self.volume_requested.emit(self.current_volume)
+
+                                    f_responses.append(
+                                        types.FunctionResponse(
+                                            name=fc.name,
+                                            id=fc.id,
+                                            response={"status": "success"}
+                                        )
+                                    )
+
+                                if f_responses:
+                                    await session.send(
+                                        input=types.LiveClientToolResponse(
+                                            function_responses=f_responses
+                                        )
+                                    )
                     except Exception as e:
                         if self.running: # Only log if it wasn't a planned stop
                             print(f"Receive Error: {e}")
