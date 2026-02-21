@@ -258,11 +258,39 @@ class LiveSession(QThread):
                         while self.running:
                             async for response in session.receive():
                                 if not self.running: break
+
+                                if response.tool_call:
+                                    f_responses = []
+                                    for fc in response.tool_call.function_calls:
+                                        print(f"DEBUG: Tool Call Received: {fc.name} with {fc.args}")
+                                        if fc.name == "change_scene":
+                                            keyword = fc.args.get("keyword")
+                                            if keyword:
+                                                self.search_requested.emit(keyword)
+                                        elif fc.name == "set_volume":
+                                            vol = fc.args.get("volume")
+                                            if vol is not None:
+                                                self.current_volume = int(vol)
+                                                self.volume_requested.emit(self.current_volume)
+
+                                        f_responses.append(
+                                            types.FunctionResponse(
+                                                name=fc.name,
+                                                id=fc.id,
+                                                response={"status": "success"}
+                                            )
+                                        )
+
+                                    if f_responses:
+                                        await session.send(
+                                            input=types.LiveClientToolResponse(
+                                                function_responses=f_responses
+                                            )
+                                        )
+                                    continue
+
                                 if response.server_content is None:
                                     continue
-#                                output_transcription = response.server_content.output_transcription
-#                                if output_transcription:
-#                                    print(f"DEBUG: Received Output Transcription: {output_transcription}")
 
                                 if response.server_content.interrupted:
                                     print("DEBUG: Interruption detected.")
@@ -277,39 +305,6 @@ class LiveSession(QThread):
                                             self.text_received.emit(part.text)
                                         if part.inline_data:
                                             self.audio_received.emit(part.inline_data.data)
-
-                            if response.tool_call:
-                                f_responses = []
-                                for fc in response.tool_call.function_calls:
-                                    print(f"DEBUG: Tool Call Received: {fc.name} with {fc.args}")
-                                    if fc.name == "change_scene":
-                                        keyword = fc.args.get("keyword")
-                                        if keyword:
-                                            self.search_requested.emit(keyword)
-                                    elif fc.name == "set_volume":
-                                        vol = fc.args.get("volume")
-                                        if vol is not None:
-                                            self.current_volume = int(vol)
-                                            self.volume_requested.emit(self.current_volume)
-
-                                    f_responses.append(
-                                        types.FunctionResponse(
-                                            name=fc.name,
-                                            id=fc.id,
-                                            response={"status": "success"}
-                                        )
-                                    )
-
-                                if f_responses:
-                                    await session.send(
-                                        input=types.LiveClientToolResponse(
-                                            function_responses=f_responses
-                                        )
-                                    )
-                                
-                                # Handling other content types like transcriptions if needed
-                                # if response.server_content.interruption:
-                                #     print("DEBUG: Interruption detected.")
                     except Exception as e:
                         if self.running: # Only log if it wasn't a planned stop
                             print(f"Receive Error: {e}")
@@ -710,7 +705,7 @@ class AIWindow(QWidget):
 
     def send_to_mpv(self, url):
         """(Legacy wrapper) Load URL"""
-        self.send_mpv_command(["stop"]) # Clear previous state
+        # 直接使用 loadfile replace，通常不需要先 stop
         self.send_mpv_command(["loadfile", url, "replace"])
 
 
@@ -726,8 +721,10 @@ class AIWindow(QWidget):
     def on_search_finished(self, video_url, Clean_msg, keyword):
         print(f"DEBUG: 搜尋結果 {video_url}")
         if video_url:
+            print(f"DEBUG: 正在發送 loadfile 指令到 mpv: {video_url}")
             self.send_to_mpv(video_url)
         else:
+            print(f"DEBUG: 搜尋失敗或未找到影片 ID")
             self.label.setText(f"{Clean_msg}<br><br><b style='color:red;'>搜尋失敗，請再試一次。</b>")
             self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
 
