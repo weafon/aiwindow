@@ -348,10 +348,9 @@ class LiveSession(QThread):
 										)
 
 									if f_responses:
-										await session.send(
-											input=types.LiveClientToolResponse(
-												function_responses=f_responses
-											)
+										# Use the explicit tool response API instead of the deprecated session.send
+										await session.send_tool_response(
+											types.LiveClientToolResponse(function_responses=f_responses)
 										)
 					except Exception as e:
 						if self.running: # Only log if it wasn't a planned stop
