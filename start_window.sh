@@ -13,8 +13,8 @@ rm -f /home/weafon/.gemini/tmp/ec81af70508adebcba9dafaa5d302b0e8893f236fa9994eb1
 # 2. 啟動 mpv 並開啟 IPC 功能 (背景執行)
 # 預設先播京都雨天
 echo "啟動窗景播放器..."
-#export url="https://www.youtube.com/watch?v=ROgRn3WuLN0"
-export url="https://www.youtube.com/watch?v=akUYfKwlo0E"
+export url="https://www.youtube.com/watch?v=ROgRn3WuLN0"
+#export url="https://www.youtube.com/watch?v=akUYfKwlo0E"
 mpv --idle --fs --loop=inf --input-ipc-server=/tmp/mpvsocket $url &
 MPV_PID=$!
 echo "MPV PID: $MPV_PID"

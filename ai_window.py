@@ -72,7 +72,6 @@ class AudioRecorder(QObject):
 		self.io_device = self.source.start()
 		if self.source.error() != QAudio.Error.NoError:
 			 print(f"ERROR: AudioSource failed to start: {self.source.error()}")
-		
 		self.io_device.readyRead.connect(self.read_data)
 		
 	def stop(self):
@@ -187,13 +186,27 @@ class LiveSession(QThread):
 						'function_declarations': [
 							{
 								'name': 'change_scene',
-								'description': '切換窗景或聽音樂，指定搜尋關鍵字。',
+								'description': '切換窗景，指定搜尋關鍵字。',
 								'parameters': {
 									'type': 'OBJECT',
 									'properties': {
 										'keyword': {
 											'type': 'STRING',
 											'description': "搜尋關鍵字，例如 '瑞士'、'雨聲'、'爵士樂'"
+										}
+									},
+									'required': ['keyword']
+								}
+							},
+							{
+								'name': 'direct_youtube_search',
+								'description': '播放影片或聽音樂，指定搜尋關鍵字。',
+								'parameters': {
+									'type': 'OBJECT',
+									'properties': {
+										'keyword': {
+											'type': 'STRING',
+											'description': "搜尋關鍵字，例如 '古典吉他'、'鋼琴獨奏'、'爵士樂'"
 										}
 									},
 									'required': ['keyword']
@@ -233,12 +246,13 @@ class LiveSession(QThread):
 				
 				# Send initial instruction as the first turn to bypass config issues
 				instruction_text = (
-					"SYSTEM INSTRUCTION: 你是一位視窗助理。"
-					"當使用者想要改變窗景或聽音樂,你必須回覆表示處理中,並調用change_scene工具。"
-					"當使用者要求調整音量時，請調用set_volume工具。"
+					"SYSTEM INSTRUCTION: 你是一位會使用工具的視窗助理。"
+					"當使用者想要改變窗景,你必須回覆表示處理中,並呼叫change_scene工具切換窗景。"
+					"當使用者說要聽音樂或看甚麼特定影片時,你呼叫direct_youtube_search工具,並根據使用者的描述來決定搜尋關鍵字。"
+					"當使用者要求調整音量時,請呼叫set_volume工具來調整音量。"
 					f"目前背景窗景的音量是 {self.current_volume}%。如果使用者說調大一點或調小一點，請根據此數值調整。"
 					"當使用者要進行其他跟窗景無關的搜尋時, 例如股票或天氣時, 請直接調用google search獲取資料, 並用溫暖且具描述性語音回覆。"
-					"當使用者表示沒有要進行對話了,例如沒事或掰掰等,你就調用quit_talk工具,結束對話。"
+					"當使用者表示沒有要進行對話了,例如沒事或掰掰等,你就呼叫quit_talk工具,結束對話。"
 					"請全程使用繁體中文。\n"
 					"Now, please say something like '你好, 甚麼事呢?'"
 				)
@@ -304,6 +318,11 @@ class LiveSession(QThread):
 												#self.change_scene(keyword)
 												self.on_exec_cmd.emit(f"change_scene:[[{keyword}]]")
 												#self.emit(keyword)
+										elif fc.name == "direct_youtube_search":
+											keyword = fc.args.get("keyword")
+											if keyword:
+												#self.direct_youtube_search(keyword)
+												self.on_exec_cmd.emit(f"direct_youtube_search:[[{keyword}]]")
 										elif fc.name == "set_volume":
 											vol = fc.args.get("volume")
 											if vol is not None:
@@ -342,92 +361,6 @@ class LiveSession(QThread):
 				print(f"Live Session Error: {e}")
 			else:
 				print("DEBUG: Live session closed gracefully.")
-	def change_scene(self, keyword: str):
-		"""切換窗景或聽音樂，指定搜尋關鍵字。
-
-		Args:
-			keyword: 搜尋關鍵字，例如 '瑞士'、'雨聲'、'爵士樂'
-		"""
-		print(f"DEBUG: change_scene called with keyword: {keyword}")
-		try:
-			# Use yt-dlp to search for a suitable YouTube video (prefer 4K/window view)
-			cmd = [
-				"yt-dlp",
-				"--no-warnings",
-				"-f", "best[height<=1080][vcodec^=avc]",
-				f"ytsearch1:{keyword} window view",
-				"--get-id",
-			]
-			try:
-				video_id = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
-			except subprocess.CalledProcessError:
-				video_id = ""
-
-			if not video_id:
-				return {"status": "error", "error": "no_search_results", "keyword": keyword}
-
-			url = f"https://www.youtube.com/watch?v={video_id}"
-
-			# Send MPV IPC commands to stop current playback and load the new URL
-			print(f"DEBUG: Sending MPV IPC commands to load URL: {url}")
-			QTimer.singleShot(2000, lambda: self.set_minimized(True) if self.is_live else None)
-			self.send_mpv_command(["stop"])
-			self.send_mpv_command(["loadfile", url, "replace"])
-
-			return {"status": "success", "keyword": keyword, "url": url}
-		except Exception as e:
-			return {"status": "error", "error": str(e)}
-
-	def set_volume(self, volume: int):
-		"""調整窗景背景音量。
-
-		Args:
-			volume: 音量大小 (0-100)
-		"""
-		try:
-			vol = int(volume)
-			vol = max(0, min(100, vol))
-			try:
-				with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-					s.connect(IPC_SOCKET)
-					s.sendall(json.dumps({"command": ["set_property", "volume", vol]}).encode("utf-8") + b"\n")
-			except Exception as e:
-				return {"status": "error", "error": f"ipc_error: {e}", "volume": vol}
-
-			return {"status": "success", "volume": vol}
-		except Exception as e:
-			return {"status": "error", "error": str(e)}
-
-
-
-
-class GeminiWorker(QThread): 
-	# Keep this for Text-Only Search fallback if needed, or remove? 
-	# For now, let's keep it but minimal, or assume user mostly uses text for search
-	finished = pyqtSignal(str)
-	
-	def __init__(self, text, is_audio=False):
-		super().__init__()
-		self.text = text
-		self.is_audio = is_audio # Added to match AIWindow call
-
-	def run(self):
-		# Keep original simple text search logic
-		try:
-			 prompt = f"""
-			你是一個智慧窗景助理。用戶說："{self.text}"
-			請給一個搜尋關鍵字。[[SEARCH_KEYWORD:關鍵字]]
-			"""
-			 response = client.models.generate_content(
-				model="gemini-2.5-flash-lite-preview-09-2025",
-				contents=prompt
-			)
-			 self.finished.emit(response.text)
-		except Exception as e:
-			self.finished.emit(str(e))
-
-	def create_wav_header(self, data_length):
-		pass # Unused now
 
 class SearchWorker(QThread):
 	finished = pyqtSignal(str) # 改回傳 URL，或者 None
@@ -441,7 +374,7 @@ class SearchWorker(QThread):
 		try:
 			# 限制搜尋結果為 1 個，且加上 4K 關鍵字增加品質
 			# 使用 --no-warnings 避免將警告訊息當作 ID 抓取
-			cmd = ["yt-dlp", "--no-warnings", "-f", "best[height<=1080][vcodec^=avc]", f"ytsearch1:{self.keyword} 4K window view", "--get-id"]
+			cmd = ["yt-dlp", "--no-warnings", "-f", "best[height<=1080][vcodec^=avc]", f"ytsearch1:{self.keyword}", "--get-id"]
 			# 不使用 stderr=subprocess.STDOUT，避免捕捉錯誤訊息
 			video_id = subprocess.check_output(cmd).decode().strip()
 			if video_id:
@@ -620,7 +553,7 @@ class AIWindow(QWidget):
 			print(f"DEBUG: Current system volume is {current_vol}%")
 
 			self.live_session = LiveSession(current_volume=current_vol)
-			self.live_session.text_received.connect(self.on_live_text)
+#			self.live_session.text_received.connect(self.on_live_text)
 			self.live_session.audio_received.connect(self.player.play)
 			self.live_session.status_changed.connect(self.on_live_status)
 			self.live_session.on_exec_cmd.connect(self.on_exec_cmd)
@@ -672,8 +605,18 @@ class AIWindow(QWidget):
 		print(f"DEBUG: Executing command from AI: {cmd}")
 		if "change_scene:[[" in cmd and "]]" in cmd:
 			parts = cmd.split("change_scene:[[")
-			keyword = parts[1].split("]]")[0].strip()
+			keyword = parts[1].split("]]")[0].strip() + " 4K window view"
 			self.label.setText(f"{parts[0]}<br><br><b style='color:#00ff00;'>正在為您前往：{keyword}...</b>")
+			QTimer.singleShot(2000, lambda: self.set_minimized(True) if self.is_live else None)
+			self.search_worker = SearchWorker(keyword)
+			self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else print("DEBUG: No URL found for keyword: " + keyword))
+			self.search_worker.start()
+			# Clear buffer to avoid repeated search
+			self.current_response_buffer = ""
+		elif "direct_youtube_search:[[" in cmd and "]]" in cmd:
+			parts = cmd.split("direct_youtube_search:[[")
+			keyword = parts[1].split("]]")[0].strip()
+			self.label.setText(f"{parts[0]}<br><br><b style='color:#00ff00;'>正在為您尋找：{keyword}...</b>")
 			QTimer.singleShot(2000, lambda: self.set_minimized(True) if self.is_live else None)
 			self.search_worker = SearchWorker(keyword)
 			self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else print("DEBUG: No URL found for keyword: " + keyword))
@@ -704,70 +647,6 @@ class AIWindow(QWidget):
 			print(f"DEBUG: Unrecognized command: {cmd}")
 			# Here you can parse the cmd and execute corresponding actions
 			# For example, if cmd is "change_scene:瑞士", you can call self.change_scene("瑞士")
-	def on_live_text(self, text):
-		# Handle keywords for search
-		# Note: LiveAPI text chunks come in small pieces. We might need to buffer or check continuously.
-		# But for simplicity, let's just append to label and check if we have received a full keyword tag.
-		
-		current_text = self.label.text()
-		# Remove HTML tags for clean checking logic if needed, but here simple appending
-		
-		# Update UI with new text (streaming)
-		# Note: self.label.setText overwrites, so we should append?
-		# But text comes in chunks.
-		# A simple strategy: Just display what we get, or keep a running buffer.
-		
-		# For this prototype: Just check if the text CONTAINS the keyword marker.
-		# Since it's streaming, it might be split across chunks. 
-		# But Gemini usually emits the tag in one go or we can detect it.
-		
-		# Let's just update label to show conversation.
-		# And scan for keyword.
-		
-		# Better approach: store latest response in a buffer variable
-		if not hasattr(self, "current_response_buffer"):
-			self.current_response_buffer = ""
-			
-		self.current_response_buffer += text
-		self.label.setText(f"{self.current_response_buffer}")
-		self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
-
-		if "[[SEARCH_KEYWORD:" in self.current_response_buffer and "]]" in self.current_response_buffer:
-			 parts = self.current_response_buffer.split("[[SEARCH_KEYWORD:")
-			 keyword = parts[1].split("]]")[0].strip()
-			 
-			 # Found keyword, trigger search
-			 self.label.setText(f"{parts[0]}<br><br><b style='color:#00ff00;'>正在為您前往：{keyword}...</b>")
-			 
-			 # Stop recording and resume background playback after a short delay
-			 # to allow the AI to finish its verbal confirmation (e.g. "好的，為您換成瑞士")
-			 QTimer.singleShot(6000, lambda: self.set_minimized(True) if self.is_live else None)
-			 
-			 self.search_worker = SearchWorker(keyword)
-			 self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else None)
-			 self.search_worker.start()
-			 
-			 # Clear buffer to avoid repeated search
-			 self.current_response_buffer = ""
-
-		elif "[[VOLUME:" in self.current_response_buffer and "]]" in self.current_response_buffer:
-			 parts = self.current_response_buffer.split("[[VOLUME:")
-			 vol_str = parts[1].split("]]")[0].strip()
-			 try:
-				 vol = int(vol_str)
-				 vol = max(0, min(100, vol))
-				 self.send_mpv_command(["set_property", "volume", vol])
-				 print(f"DEBUG: Setting volume to {vol}%")
-				 # Just show a small toast-like message or updating the label
-				 self.label.setText(f"{parts[0]}<br><br><b style='color:#00cbff;'>音量已調整為 {vol}%</b>")
-				 
-				 # Automatically minimize and disconnect after a delay (e.g. 4 seconds)
-				 QTimer.singleShot(4000, lambda: self.set_minimized(True) if self.is_live else None)
-			 except:
-				 pass
-			 # Note: We clear the buffer to stop re-processing the same tag
-			 self.current_response_buffer = ""
-
 	def handle_input(self):
 		text = self.input_field.text().strip()
 		if not text: return
@@ -776,12 +655,6 @@ class AIWindow(QWidget):
 		
 		# 文本輸入也自動展開（如果不小心縮小了）
 		if self.is_minimized: self.set_minimized(False)
-		
-		self.worker = GeminiWorker(text, is_audio=False)
-		self.worker.finished.connect(self.on_ai_finished)
-		# Note: Text input might also get audio response if configure to
-		self.worker.audio_ready.connect(self.player.play) 
-		self.worker.start()
 
 	def send_mpv_command(self, cmd_list):
 		"""通用 MPV 指令發送"""
