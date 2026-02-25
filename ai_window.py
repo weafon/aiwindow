@@ -50,33 +50,33 @@ class AudioRecorder(QObject):
 		target_device = QMediaDevices.defaultAudioInput()
 		devices = QMediaDevices.audioInputs()
 		
-		print("DEBUG: Scanning Audio Devices...")
+		print("\nDEBUG: Scanning Audio Devices...")
 		for dev in devices:
 			name = dev.description()
 			print(f" - Found: {name}")
 			# Prioritize USB Mic or ConferenceCam
 			if "Basic" in name or "Conference" in name or "USB" in name:
-				print(f"DEBUG: Switching to preferred device: {name}")
+				print(f"\nDEBUG: Switching to preferred device: {name}")
 				target_device = dev
 				
 		if target_device.isNull():
 			print("ERROR: No valid audio input found.")
 		else:
-			print(f"DEBUG: Using Audio Input: {target_device.description()}")
+			print(f"\nDEBUG: Using Audio Input: {target_device.description()}")
 
 		self.source = QAudioSource(target_device, self.format)
 		self.io_device = None
 		self.log_timer = 0
 	
 	def start(self):
-		print("DEBUG: Starting AudioRecorder...")
+		print("\nDEBUG: Starting AudioRecorder...")
 		self.io_device = self.source.start()
 		if self.source.error() != QAudio.Error.NoError:
 				print(f"ERROR: AudioSource failed to start: {self.source.error()}")
 		self.io_device.readyRead.connect(self.read_data)
 		
 	def stop(self):
-		print("DEBUG: Stopping AudioRecorder...")
+		print("\nDEBUG: Stopping AudioRecorder...")
 		self.source.stop()
 		if self.io_device:
 			self.io_device.readyRead.disconnect(self.read_data)
@@ -88,7 +88,7 @@ class AudioRecorder(QObject):
 			if data.size() > 0:
 				self.log_timer += 1
 #                if self.log_timer % 20 == 0: # Log every ~20 chunks (approx 2 sec)
-#                    print(f"DEBUG: Audio capturing... ({data.size()} bytes)")
+#                    print(f"\nDEBUG: Audio capturing... ({data.size()} bytes)")
 				self.audio_data_ready.emit(data.data())
 
 class AudioPlayer(QObject):
@@ -100,13 +100,13 @@ class AudioPlayer(QObject):
 		self.format.setSampleFormat(QAudioFormat.SampleFormat.Int16)
 		
 		info = QMediaDevices.defaultAudioOutput()
-		print(f"DEBUG: Default Output Device: {info.description()}")
+		print(f"\nDEBUG: Default Output Device: {info.description()}")
 		if not info.isFormatSupported(self.format):
 			print(f"WARNING: 24000Hz 1ch Int16 not supported. Finding nearest...")
 			self.format = info.preferredFormat()
-			print(f"DEBUG: Nearest format: {self.format.sampleRate()}Hz, {self.format.channelCount()}ch")
+			print(f"\nDEBUG: Nearest format: {self.format.sampleRate()}Hz, {self.format.channelCount()}ch")
 		else:
-			print("DEBUG: 24000Hz format supported!")
+			print("\nDEBUG: 24000Hz format supported!")
 
 		self.sink = QAudioSink(info, self.format)
 		self.sink.setBufferSize(48000) # Internal HW buffer size
@@ -130,7 +130,7 @@ class AudioPlayer(QObject):
 			# to stay relatively in sync without being totally broken.
 			trim_size = len(self.queue) - 48000 
 			self.queue = self.queue[trim_size:]
-			print(f"DEBUG: Audio Latency Spike! Trimmed {trim_size} bytes to catch up.")
+			print(f"\nDEBUG: Audio Latency Spike! Trimmed {trim_size} bytes to catch up.")
 
 	def process_queue(self):
 		if not self.io_device or not self.io_device.isOpen():
@@ -150,7 +150,7 @@ class AudioPlayer(QObject):
 		if len(self.queue) > 0:
 			self._log_tick += 1
 			if self._log_tick % 100 == 0: # Every ~2 seconds of playback effort
-				print(f"DEBUG: Buffer level: {len(self.queue)/48000:.2f}s")
+				print(f"\nDEBUG: Buffer level: {len(self.queue)/48000:.2f}s")
 
 class LiveSession(QThread):
 	finished = pyqtSignal()
@@ -290,7 +290,7 @@ class LiveSession(QThread):
 						except Exception as e:
 							print(f"Send Error: {e}")
 							break
-					print("DEBUG: Sender loop finished.")
+					print("\nDEBUG: Sender loop finished.")
 				
 				async def receiver():
 					isFirst = True
@@ -304,7 +304,7 @@ class LiveSession(QThread):
 										for part in model_turn.parts:
 											if part.text:
 												# Ensure we're only emitting text that is clearly model output
-												print(f"DEBUG: Received Model Text Chunks: {part.text}")
+												print(f"\nDEBUG: Received Model Text Chunks: {part.text}")
 												self.text_received.emit(part.text)
 											if part.inline_data:
 												if isFirst:
@@ -312,11 +312,11 @@ class LiveSession(QThread):
 													self.status_changed.emit("助理來了...")
 												self.audio_received.emit(part.inline_data.data)
 												continue
-								#print(f"DEBUG: Received Response: {response}")
+								#print(f"\nDEBUG: Received Response: {response}")
 								if response.tool_call:
 									f_responses = []
 									for fc in response.tool_call.function_calls:
-										print(f"DEBUG: Tool Call Received: {fc.name} with {fc.args}")
+										print(f"\nDEBUG: Tool Call Received: {fc.name} with {fc.args}")
 										if fc.name == "change_scene":
 											keyword = fc.args.get("keyword")
 											if keyword:
@@ -355,7 +355,7 @@ class LiveSession(QThread):
 					except Exception as e:
 						if self.running: # Only log if it wasn't a planned stop
 							print(f"Receive Error: {e}")
-					print("DEBUG: Receiver loop finished.")
+					print("\nDEBUG: Receiver loop finished.")
 
 				await asyncio.gather(sender(), receiver())
 				
@@ -364,7 +364,7 @@ class LiveSession(QThread):
 				self.status_changed.emit(f"連線錯誤: {e}")
 				print(f"Live Session Error: {e}")
 			else:
-				print("DEBUG: Live session closed gracefully.")
+				print("\nDEBUG: Live session closed gracefully.")
 
 class SearchWorker(QThread):
 	finished = pyqtSignal(str) # 改回傳 URL，或者 None
@@ -374,7 +374,7 @@ class SearchWorker(QThread):
 		self.keyword = keyword
 
 	def run(self):
-		print(f"DEBUG: 開始搜尋 {self.keyword} 的 YouTube 影片...")
+		print(f"\nDEBUG: 開始搜尋 {self.keyword} 的 YouTube 影片...")
 		try:
 			# 限制搜尋結果為 1 個，且加上 4K 關鍵字增加品質
 			# 使用 --no-warnings 避免將警告訊息當作 ID 抓取
@@ -382,10 +382,10 @@ class SearchWorker(QThread):
 			# 不使用 stderr=subprocess.STDOUT，避免捕捉錯誤訊息
 			video_id = subprocess.check_output(cmd).decode().strip()
 			if video_id:
-				print(f"DEBUG: 找到影片 ID: " + f"https://www.youtube.com/watch?v={video_id}")
+				print(f"\nDEBUG: 找到影片 ID: " + f"https://www.youtube.com/watch?v={video_id}")
 				self.finished.emit(f"https://www.youtube.com/watch?v={video_id}")
 			else:
-				print(f"DEBUG: 沒有找到影片，關鍵字: {self.keyword}")
+				print(f"\nDEBUG: 沒有找到影片，關鍵字: {self.keyword}")
 				self.finished.emit("")
 		except Exception as e:
 			print(f"搜尋失敗: {e}")
@@ -531,7 +531,7 @@ class AIWindow(QWidget):
 
 	def toggle_recording(self):
 		if not self.is_live:
-			print("DEBUG: Starting new recording session...")
+			print("\nDEBUG: Starting new recording session...")
 			# Start Live Session
 			self.is_live = True
 			self.current_response_buffer = "" # Reset buffer for new session
@@ -548,14 +548,14 @@ class AIWindow(QWidget):
 			
 			# Prepare for fresh session instance
 			if self.live_session:
-				print("DEBUG: Stopping previous session...")
+				print("\nDEBUG: Stopping previous session...")
 				self.live_session.stop()
 				# DO NOT wait() here! It blocks the UI thread.
 				# The thread will exit on its own once asyncio stops.
 
 			current_vol = self.get_mpv_property("volume")
 			if current_vol is None: current_vol = 100
-			print(f"DEBUG: Current system volume is {current_vol}%")
+			print(f"\nDEBUG: Current system volume is {current_vol}%")
 
 			self.live_session = LiveSession(current_volume=current_vol)
 #			self.live_session.text_received.connect(self.on_live_text)
@@ -578,7 +578,7 @@ class AIWindow(QWidget):
 			self.send_mpv_command(["set_property", "pause", True])
 			
 		else:
-			print("DEBUG: Stopping recording session...")
+			print("\nDEBUG: Stopping recording session...")
 			# Stop Live Session
 			self.is_live = False
 			self.mic_btn.setStyleSheet("""
@@ -607,14 +607,14 @@ class AIWindow(QWidget):
 	def on_live_status(self, status):
 		self.label.setText(f"<i>{status}</i>")
 	def on_exec_cmd(self, cmd):
-		print(f"DEBUG: Executing command from AI: {cmd}")
+		print(f"\nDEBUG: Executing command from AI: {cmd}")
 		if "change_scene:[[" in cmd and "]]" in cmd:
 			parts = cmd.split("change_scene:[[")
 			keyword = parts[1].split("]]")[0].strip() + " 4K window view"
 			self.label.setText(f"{parts[0]}<br><br><b style='color:#00ff00;'>正在為您前往：{keyword}...</b>")
 			QTimer.singleShot(2000, lambda: self.set_minimized(True) if self.is_live else None)
 			self.search_worker = SearchWorker(keyword)
-			self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else print("DEBUG: No URL found for keyword: " + keyword))
+			self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else print("\nDEBUG: No URL found for keyword: " + keyword))
 			self.search_worker.start()
 			# Clear buffer to avoid repeated search
 			self.current_response_buffer = ""
@@ -624,7 +624,7 @@ class AIWindow(QWidget):
 			self.label.setText(f"{parts[0]}<br><br><b style='color:#00ff00;'>正在為您尋找：{keyword}...</b>")
 			QTimer.singleShot(2000, lambda: self.set_minimized(True) if self.is_live else None)
 			self.search_worker = SearchWorker(keyword)
-			self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else print("DEBUG: No URL found for keyword: " + keyword))
+			self.search_worker.finished.connect(lambda url: self.send_to_mpv(url) if url else print("\nDEBUG: No URL found for keyword: " + keyword))
 			self.search_worker.start()
 			# Clear buffer to avoid repeated search
 			self.current_response_buffer = ""
@@ -635,7 +635,7 @@ class AIWindow(QWidget):
 				vol = int(vol_str)
 				vol = max(0, min(100, vol))
 				self.send_mpv_command(["set_property", "volume", vol])
-				print(f"DEBUG: Setting volume to {vol}%")
+				print(f"\nDEBUG: Setting volume to {vol}%")
 				self.label.setText(f"{parts[0]}<br><br><b style='color:#00cbff;'>音量已調整為 {vol}%</b>")
 				QTimer.singleShot(4000, lambda: self.set_minimized(True) if self.is_live else None)
 			except:
@@ -649,7 +649,7 @@ class AIWindow(QWidget):
 			if not self.is_minimized:
 				self.set_minimized(True)
 		else:
-			print(f"DEBUG: Unrecognized command: {cmd}")
+			print(f"\nDEBUG: Unrecognized command: {cmd}")
 			# Here you can parse the cmd and execute corresponding actions
 			# For example, if cmd is "change_scene:瑞士", you can call self.change_scene("瑞士")
 	def handle_input(self):
@@ -723,24 +723,24 @@ class AIWindow(QWidget):
 	def play_random_from_list(self):
 		url = self.pick_random_from_list()
 		if url:
-			print(f"\nDEBUG: Selected random URL from play.lst: {url}")
+			print(f"\n\nDEBUG: Selected random URL from play.lst: {url}")
 			self.send_url_when_ready(url)
 		else:
-			print("\nDEBUG: No URL found in play.lst")
+			print("\n\nDEBUG: No URL found in play.lst")
 
 	def send_url_when_ready(self, url, tries=25, interval=200):
 		"""Poll for mpv IPC socket readiness, then send the URL."""
 		self._send_attempts = 0
 		def attempt():
 			if os.path.exists(IPC_SOCKET):
-				print("\nDEBUG: mpv socket ready, sending URL")
+				print("\n\nDEBUG: mpv socket ready, sending URL")
 				self.send_to_mpv(url)
 			else:
 				self._send_attempts += 1
 				if self._send_attempts < tries:
 					QTimer.singleShot(interval, attempt)
 				else:
-					print("DEBUG: MPV socket not ready, giving up after retries.")
+					print("\nDEBUG: MPV socket not ready, giving up after retries.")
 		QTimer.singleShot(500, attempt)
 
 
@@ -764,7 +764,7 @@ class AIWindow(QWidget):
 		self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
 
 	def on_search_finished(self, video_url, Clean_msg, keyword):
-		print(f"DEBUG: 搜尋結果 {video_url}")
+		print(f"\nDEBUG: 搜尋結果 {video_url}")
 		if video_url:
 			self.send_to_mpv(video_url)
 		else:
