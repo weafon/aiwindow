@@ -293,6 +293,7 @@ class LiveSession(QThread):
 					print("DEBUG: Sender loop finished.")
 				
 				async def receiver():
+					isFirst = True
 					try:
 						while self.running:
 							async for response in session.receive():
@@ -306,6 +307,9 @@ class LiveSession(QThread):
 												print(f"DEBUG: Received Model Text Chunks: {part.text}")
 												self.text_received.emit(part.text)
 											if part.inline_data:
+												if isFirst:
+													isFirst = False
+													self.status_changed.emit("助理來了...")
 												self.audio_received.emit(part.inline_data.data)
 												continue
 								#print(f"DEBUG: Received Response: {response}")
@@ -479,7 +483,7 @@ class AIWindow(QWidget):
 		# 輸入區域
 		input_layout = QHBoxLayout()
 		self.input_field = QLineEdit()
-		self.input_field.setPlaceholderText("對助理下指令...")
+		self.input_field.setPlaceholderText("關鍵字影片搜尋...")
 		self.input_field.setStyleSheet("""
 			background-color: rgba(255, 255, 255, 210);
 			border-radius: 10px; padding: 12px; font-size: 18px; color: #111;
@@ -652,11 +656,10 @@ class AIWindow(QWidget):
 	def handle_input(self):
 		text = self.input_field.text().strip()
 		if not text: return
-		self.label.setText(f"<b>問：</b>{text}<br><br><i style='color:#ccc;'>正在為您聯繫宇宙...</i>")
+		self.label.setText(f"<i style='color:#ccc;'>正在為您收尋{text}...</i>")
 		self.input_field.clear()
-		
-		# 文本輸入也自動展開（如果不小心縮小了）
 		if self.is_minimized: self.set_minimized(False)
+		self.on_exec_cmd("direct_youtube_search:[[" + text + "]]")
 
 	def send_mpv_command(self, cmd_list):
 		"""通用 MPV 指令發送"""
@@ -691,9 +694,10 @@ class AIWindow(QWidget):
 		This prevents MPV from rejecting the loadfile when called too quickly.
 		"""
 		try:
-			self.send_mpv_command(["stop"]) # Clear previous state
+			#self.send_mpv_command(["stop"]) # Clear previous state
 			# Schedule loadfile after a short delay to let mpv settle
-			QTimer.singleShot(500, lambda: self.send_mpv_command(["loadfile", url, "replace"]))
+			#QTimer.singleShot(500, lambda: self.send_mpv_command(["loadfile", url, "replace"]))
+			self.send_mpv_command(["loadfile", url, "replace"])
 		except Exception as e:
 			print(f"send_to_mpv error: {e}")
 
@@ -720,17 +724,17 @@ class AIWindow(QWidget):
 	def play_random_from_list(self):
 		url = self.pick_random_from_list()
 		if url:
-			print(f"DEBUG: Selected random URL from play.lst: {url}")
+			print(f"\nDEBUG: Selected random URL from play.lst: {url}")
 			self.send_url_when_ready(url)
 		else:
-			print("DEBUG: No URL found in play.lst")
+			print("\nDEBUG: No URL found in play.lst")
 
 	def send_url_when_ready(self, url, tries=25, interval=200):
 		"""Poll for mpv IPC socket readiness, then send the URL."""
 		self._send_attempts = 0
 		def attempt():
 			if os.path.exists(IPC_SOCKET):
-				print("DEBUG: mpv socket ready, sending URL")
+				print("\nDEBUG: mpv socket ready, sending URL")
 				self.send_to_mpv(url)
 			else:
 				self._send_attempts += 1
