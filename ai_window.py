@@ -20,6 +20,7 @@ import struct
 import base64
 import asyncio
 import queue
+import random
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -71,7 +72,7 @@ class AudioRecorder(QObject):
 		print("DEBUG: Starting AudioRecorder...")
 		self.io_device = self.source.start()
 		if self.source.error() != QAudio.Error.NoError:
-			 print(f"ERROR: AudioSource failed to start: {self.source.error()}")
+				print(f"ERROR: AudioSource failed to start: {self.source.error()}")
 		self.io_device.readyRead.connect(self.read_data)
 		
 	def stop(self):
@@ -405,7 +406,8 @@ class AIWindow(QWidget):
 		# 3. 連結訊號
 		# Note: live_session signals will be connected when created
 		# recorder data signal will also be handled dynamically
-		pass
+		# 啟動時嘗試從 play.lst 隨機選一個 URL，由 MPV 播放
+		QTimer.singleShot(1000, self.play_random_from_list)
 
 	def initUI(self):
 		# 視窗屬性：無邊框、最上層、透明背景
@@ -683,10 +685,60 @@ class AIWindow(QWidget):
 		return None
 
 	def send_to_mpv(self, url):
-		"""(Legacy wrapper) Load URL"""
-		self.send_mpv_command(["stop"]) # Clear previous state
-		asyncio.sleep(0.5) # Short delay to ensure MPV is ready for next command
-		self.send_mpv_command(["loadfile", url, "replace"])
+		"""Load URL into mpv via IPC.
+
+		Send a `stop` first, then wait a short delay before issuing `loadfile`.
+		This prevents MPV from rejecting the loadfile when called too quickly.
+		"""
+		try:
+			self.send_mpv_command(["stop"]) # Clear previous state
+			# Schedule loadfile after a short delay to let mpv settle
+			QTimer.singleShot(500, lambda: self.send_mpv_command(["loadfile", url, "replace"]))
+		except Exception as e:
+			print(f"send_to_mpv error: {e}")
+
+	def pick_random_from_list(self):
+		"""Read play.lst (same dir as this file), ignore lines starting with '#', return one random URL or None."""
+		path = os.path.join(os.path.dirname(__file__), "play.lst")
+		try:
+			with open(path, 'r', encoding='utf-8') as f:
+				lines = []
+				for ln in f:
+					lns = ln.strip()
+					if not lns:
+						continue
+					if lns.lstrip().startswith('#'):
+						continue
+					lines.append(lns)
+				if not lines:
+					return None
+				return random.choice(lines)
+		except Exception as e:
+			print(f"Error reading play.lst: {e}")
+			return None
+
+	def play_random_from_list(self):
+		url = self.pick_random_from_list()
+		if url:
+			print(f"DEBUG: Selected random URL from play.lst: {url}")
+			self.send_url_when_ready(url)
+		else:
+			print("DEBUG: No URL found in play.lst")
+
+	def send_url_when_ready(self, url, tries=25, interval=200):
+		"""Poll for mpv IPC socket readiness, then send the URL."""
+		self._send_attempts = 0
+		def attempt():
+			if os.path.exists(IPC_SOCKET):
+				print("DEBUG: mpv socket ready, sending URL")
+				self.send_to_mpv(url)
+			else:
+				self._send_attempts += 1
+				if self._send_attempts < tries:
+					QTimer.singleShot(interval, attempt)
+				else:
+					print("DEBUG: MPV socket not ready, giving up after retries.")
+		QTimer.singleShot(500, attempt)
 
 
 
