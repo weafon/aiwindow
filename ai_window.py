@@ -554,6 +554,22 @@ class AIWindow(QWidget):
 		""")
 		self.mic_btn.clicked.connect(self.toggle_recording)
 		input_layout.addWidget(self.mic_btn)
+
+		self.heart_btn = QPushButton("♡")
+		self.heart_btn.setFixedSize(50, 46)
+		self.heart_btn.setStyleSheet("""
+			QPushButton {
+				background-color: rgba(0, 0, 0, 160);
+				color: white;
+				font-size: 20px;
+				border-radius: 23px;
+				border: 2px solid rgba(255, 255, 255, 100);
+			}
+			QPushButton:hover { background-color: rgba(0, 0, 0, 200); }
+		""")
+		self.heart_btn.clicked.connect(self.toggle_favorite)
+		input_layout.addWidget(self.heart_btn)
+
 		full_layout.addLayout(input_layout)
 
 		self.root_layout.addWidget(self.full_ui_widget)
@@ -747,8 +763,54 @@ class AIWindow(QWidget):
 			# Schedule loadfile after a short delay to let mpv settle
 			#QTimer.singleShot(500, lambda: self.send_mpv_command(["loadfile", url, "replace"]))
 			self.send_mpv_command(["loadfile", url, "replace"])
+
+			# Sync heart button state
+			if self.is_in_playlist(url):
+				self.heart_btn.setText("♥")
+			else:
+				self.heart_btn.setText("♡")
 		except Exception as e:
 			print(f"send_to_mpv error: {e}")
+
+	def is_in_playlist(self, url):
+		"""Check if the URL is already in play.lst."""
+		if not url: return False
+		path = os.path.join(os.path.dirname(__file__), "play.lst")
+		if not os.path.exists(path): return False
+		try:
+			with open(path, 'r', encoding='utf-8') as f:
+				for line in f:
+					line = line.strip()
+					if not line or line.startswith('#'):
+						continue
+					if line == url.strip():
+						return True
+		except Exception as e:
+			print(f"Error reading play.lst: {e}")
+		return False
+
+	def toggle_favorite(self):
+		"""Add current video to favorites (play.lst)."""
+		url = self.get_mpv_property("path")
+		if not url:
+			print("DEBUG: No current video URL found to favorite.")
+			return
+
+		if self.is_in_playlist(url):
+			print(f"DEBUG: URL already in favorites: {url}")
+			self.heart_btn.setText("♥")
+			return
+
+		title = self.get_mpv_property("media-title") or "Unknown Title"
+		path = os.path.join(os.path.dirname(__file__), "play.lst")
+
+		try:
+			with open(path, 'a', encoding='utf-8') as f:
+				f.write(f"\n# {title}\n{url}\n")
+			print(f"DEBUG: Added to favorites: {title} ({url})")
+			self.heart_btn.setText("♥")
+		except Exception as e:
+			print(f"Error adding to favorites: {e}")
 
 	def pick_random_from_list(self):
 		"""Read play.lst (same dir as this file), ignore lines starting with '#', return one random URL or None."""
