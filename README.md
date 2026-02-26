@@ -12,6 +12,7 @@ AI Window is a minimalist, transparent window assistant that combines real-time 
   - **Jitter Buffer**: Advanced latency management to prevent audio stuttering during network bursts.
 - **Minimalist UI**: A sleek, transparent, and "always-on-top" PyQt6 interface.
 - **Auto Mic Closure**: The assistant automatically closes the microphone 6 seconds after a search command is detected, allowing it to finish its verbal confirmation.
+- **LAN Remote Control**: Send YouTube URLs from other computers on the same network to play them on the AI Window.
 
 ## 🛠️ Prerequisites
 
@@ -47,6 +48,10 @@ AI Window is a minimalist, transparent window assistant that combines real-time 
   - *"Show me a snowy mountain view."*
   - *"帮我换成日本街道的风景"* (Support for Traditional Chinese).
 - **Text Entry**: You can also type commands into the input field at the bottom.
+- **LAN Remote Control**:
+  - Copy `DropToMPV.bat` to your Windows computer.
+  - Edit the `UBUNTU_IP` in the file to match your Ubuntu machine's IP (find it with `hostname -I`).
+  - Drag and drop any YouTube URL onto the `.bat` file to play it instantly.
 - **Exit**: Click the '✕' or press `Esc`.
 
 ## ⚙️ Technical Details

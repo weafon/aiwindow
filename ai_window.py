@@ -400,6 +400,50 @@ class SearchWorker(QThread):
             print(f"搜尋失敗: {e}")
             self.finished.emit("")
 
+class LANListener(QThread):
+    url_received = pyqtSignal(str)
+
+    def __init__(self, port=9999):
+        super().__init__()
+        self.port = port
+        self.running = True
+
+    def run(self):
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.server_socket.bind(('0.0.0.0', self.port))
+            self.server_socket.listen(5)
+            self.server_socket.settimeout(1.0)
+            print(f"DEBUG: LAN Listener started on port {self.port}")
+        except Exception as e:
+            print(f"ERROR: Could not start LAN listener: {e}")
+            return
+
+        while self.running:
+            try:
+                conn, addr = self.server_socket.accept()
+                with conn:
+                    print(f"DEBUG: LAN connection from {addr}")
+                    data = conn.recv(2048)
+                    if data:
+                        text = data.decode('utf-8').strip()
+                        for line in text.splitlines():
+                            url = line.strip().strip('"').strip("'")
+                            if url.startswith("http"):
+                                self.url_received.emit(url)
+                                break
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if self.running:
+                    print(f"DEBUG: LAN Listener error: {e}")
+
+        self.server_socket.close()
+
+    def stop(self):
+        self.running = False
+
 class AIWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -412,6 +456,11 @@ class AIWindow(QWidget):
         self.player = AudioPlayer()
         self.live_session = None # Will instantiate per use
         
+        # 啟動 LAN 監聽器
+        self.lan_listener = LANListener(port=9999)
+        self.lan_listener.url_received.connect(self.on_lan_url_received)
+        self.lan_listener.start()
+
         # 2. 建立 UI
         self.initUI()
 
@@ -419,6 +468,11 @@ class AIWindow(QWidget):
         # Note: live_session signals will be connected when created
         # recorder data signal will also be handled dynamically
         pass
+
+    def on_lan_url_received(self, url):
+        print(f"DEBUG: Received URL from LAN: {url}")
+        self.label.setText(f"<i>正在播放來自區域網路的影片...</i><br>{url}")
+        self.send_to_mpv(url)
 
     def initUI(self):
         # 視窗屬性：無邊框、最上層、透明背景
@@ -730,7 +784,18 @@ class AIWindow(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
-            QApplication.quit()
+            self.close()
+
+    def closeEvent(self, event):
+        print("DEBUG: Closing application, cleaning up...")
+        if hasattr(self, 'lan_listener'):
+            self.lan_listener.stop()
+            self.lan_listener.wait()
+        if hasattr(self, 'live_session') and self.live_session:
+            self.live_session.stop()
+            self.live_session.wait()
+        self.recorder.stop()
+        event.accept()
 
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal.SIG_DFL)
