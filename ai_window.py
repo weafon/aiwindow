@@ -391,6 +391,51 @@ class SearchWorker(QThread):
 			print(f"搜尋失敗: {e}")
 			self.finished.emit("")
 
+class LANListener(QThread):
+	command_received = pyqtSignal(list)
+
+	def __init__(self, parent=None):
+		super().__init__(parent)
+		self.running = True
+
+	def run(self):
+		server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		try:
+			server_socket.bind(('0.0.0.0', 9998))
+			server_socket.listen(5)
+			server_socket.settimeout(1.0)
+			print("DEBUG: LAN Listener started on port 9998")
+		except Exception as e:
+			print(f"DEBUG: LAN Listener failed to start: {e}")
+			return
+
+		while self.running:
+			try:
+				client_conn, addr = server_socket.accept()
+				data = client_conn.recv(4096)
+				if data:
+					try:
+						msg = data.decode('utf-8').strip()
+						print(f"DEBUG: Received LAN message: {msg}")
+						payload = json.loads(msg)
+						if "command" in payload:
+							self.command_received.emit(payload["command"])
+					except Exception as e:
+						print(f"DEBUG: LAN Listener error processing message: {e}")
+				client_conn.close()
+			except socket.timeout:
+				continue
+			except Exception as e:
+				if self.running:
+					print(f"DEBUG: LAN Listener loop error: {e}")
+				break
+		server_socket.close()
+		print("DEBUG: LAN Listener stopped.")
+
+	def stop(self):
+		self.running = False
+
 class AIWindow(QWidget):
 	def __init__(self):
 		super().__init__()
@@ -402,6 +447,11 @@ class AIWindow(QWidget):
 		self.recorder = AudioRecorder()
 		self.player = AudioPlayer()
 		self.live_session = None # Will instantiate per use
+
+		# 加入 LAN Listener
+		self.lan_listener = LANListener(self)
+		self.lan_listener.command_received.connect(self.send_mpv_command)
+		self.lan_listener.start()
 		
 		# 2. 建立 UI
 		self.initUI()
@@ -774,6 +824,16 @@ class AIWindow(QWidget):
 	def keyPressEvent(self, event):
 		if event.key() == Qt.Key.Key_Escape:
 			QApplication.quit()
+
+	def closeEvent(self, event):
+		print("\nDEBUG: AIWindow closing, cleaning up...")
+		if hasattr(self, 'lan_listener') and self.lan_listener:
+			self.lan_listener.stop()
+			self.lan_listener.wait()
+		if self.live_session:
+			self.live_session.stop()
+			self.live_session.wait()
+		event.accept()
 
 if __name__ == '__main__':
 	signal.signal(signal.SIGINT, signal.SIG_DFL)
