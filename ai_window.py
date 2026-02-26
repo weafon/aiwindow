@@ -472,6 +472,11 @@ class AIWindow(QWidget):
 		self.setLayout(self.root_layout)
 
 		# --- 1. 泡泡模式 (Minimized) ---
+		self.bubble_container = QWidget()
+		bubble_layout = QHBoxLayout(self.bubble_container)
+		bubble_layout.setContentsMargins(0, 0, 0, 0)
+		bubble_layout.setSpacing(10)
+
 		self.bubble_btn = QPushButton("🎤")
 		self.bubble_btn.setFixedSize(60, 60)
 		self.bubble_btn.setStyleSheet("""
@@ -485,7 +490,24 @@ class AIWindow(QWidget):
 			QPushButton:hover { background-color: rgba(0, 0, 0, 220); border: 2px solid white; }
 		""")
 		self.bubble_btn.clicked.connect(lambda: self.set_minimized(False))
-		self.root_layout.addWidget(self.bubble_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+		bubble_layout.addWidget(self.bubble_btn)
+
+		self.bubble_heart_btn = QPushButton("♡")
+		self.bubble_heart_btn.setFixedSize(60, 60)
+		self.bubble_heart_btn.setStyleSheet("""
+			QPushButton {
+				background-color: rgba(0, 0, 0, 180);
+				color: white;
+				font-size: 30px;
+				border-radius: 30px;
+				border: 2px solid rgba(255, 255, 255, 120);
+			}
+			QPushButton:hover { background-color: rgba(0, 0, 0, 220); border: 2px solid white; }
+		""")
+		self.bubble_heart_btn.clicked.connect(self.toggle_favorite)
+		bubble_layout.addWidget(self.bubble_heart_btn)
+
+		self.root_layout.addWidget(self.bubble_container, alignment=Qt.AlignmentFlag.AlignCenter)
 
 		# --- 2. 完整模式 (Full UI) ---
 		self.full_ui_widget = QWidget()
@@ -582,13 +604,13 @@ class AIWindow(QWidget):
 		self.is_minimized = minimized
 		if minimized:
 			self.full_ui_widget.hide()
-			self.bubble_btn.show()
-			self.setFixedSize(60, 60)
+			self.bubble_container.show()
+			self.setFixedSize(140, 70)
 			# 如果還在語音，就關掉
 			if self.is_live:
 				self.toggle_recording()
 		else:
-			self.bubble_btn.hide()
+			self.bubble_container.hide()
 			self.full_ui_widget.show()
 			self.setFixedSize(450, 550)
 			# 自動開始錄音
@@ -765,12 +787,42 @@ class AIWindow(QWidget):
 			self.send_mpv_command(["loadfile", url, "replace"])
 
 			# Sync heart button state
-			if self.is_in_playlist(url):
-				self.heart_btn.setText("♥")
-			else:
-				self.heart_btn.setText("♡")
+			self.update_heart_ui(self.is_in_playlist(url))
 		except Exception as e:
 			print(f"send_to_mpv error: {e}")
+
+	def update_heart_ui(self, is_favorite):
+		"""Update heart icon and color for both UI modes."""
+		text = "♥" if is_favorite else "♡"
+		color = "rgba(255, 50, 50, 255)" if is_favorite else "white"
+
+		# Full mode heart button style
+		style = f"""
+			QPushButton {{
+				background-color: rgba(0, 0, 0, 160);
+				color: {color};
+				font-size: 20px;
+				border-radius: 23px;
+				border: 2px solid rgba(255, 255, 255, 100);
+			}}
+			QPushButton:hover {{ background-color: rgba(0, 0, 0, 200); }}
+		"""
+		self.heart_btn.setText(text)
+		self.heart_btn.setStyleSheet(style)
+
+		# Bubble mode heart button style
+		bubble_style = f"""
+			QPushButton {{
+				background-color: rgba(0, 0, 0, 180);
+				color: {color};
+				font-size: 30px;
+				border-radius: 30px;
+				border: 2px solid rgba(255, 255, 255, 120);
+			}}
+			QPushButton:hover {{ background-color: rgba(0, 0, 0, 220); border: 2px solid white; }}
+		"""
+		self.bubble_heart_btn.setText(text)
+		self.bubble_heart_btn.setStyleSheet(bubble_style)
 
 	def is_in_playlist(self, url):
 		"""Check if the URL is already in play.lst."""
@@ -798,7 +850,7 @@ class AIWindow(QWidget):
 
 		if self.is_in_playlist(url):
 			print(f"DEBUG: URL already in favorites: {url}")
-			self.heart_btn.setText("♥")
+			self.update_heart_ui(True)
 			return
 
 		title = self.get_mpv_property("media-title") or "Unknown Title"
@@ -808,7 +860,7 @@ class AIWindow(QWidget):
 			with open(path, 'a', encoding='utf-8') as f:
 				f.write(f"\n# {title}\n{url}\n")
 			print(f"DEBUG: Added to favorites: {title} ({url})")
-			self.heart_btn.setText("♥")
+			self.update_heart_ui(True)
 		except Exception as e:
 			print(f"Error adding to favorites: {e}")
 
