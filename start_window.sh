@@ -8,20 +8,16 @@ export QT_QPA_PLATFORM=xcb
 export SDL_VIDEODRIVER=x11
 # 1. 清理舊的 Socket
 rm -f /tmp/mpvsocket
-rm -f /home/weafon/.gemini/tmp/ec81af70508adebcba9dafaa5d302b0e8893f236fa9994eb1ef1ea1255a8bf83/mpv.log
 
 # 2. 啟動 mpv 並開啟 IPC 功能 (背景執行)
-echo "啟動窗景播放器 (idle mode)..."
-# 啟動 mpv 空閒模式，之後由 ai_window.py 隨機選取並下達 loadfile 指令
-mpv --idle --fs --loop=inf --input-ipc-server=/tmp/mpvsocket &
+# 預設先播京都雨天
+echo "啟動窗景播放器..."
+mpv --fs --loop=inf --input-ipc-server=/tmp/mpvsocket "https://www.youtube.com/watch?v=akUYfKwlo0E" 2> /dev/null &
 MPV_PID=$!
-echo "MPV PID: $MPV_PID"
 
 # 3. 啟動 AI UI
 echo "啟動 AI UI..."
 python3 ai_window.py
 
 # 4. 當 UI 結束時，清理後台進程
-echo "UI finished. Killing MPV PID: $MPV_PID"
 kill $MPV_PID
-echo "Kill command sent."
