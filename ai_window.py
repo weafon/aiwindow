@@ -845,11 +845,11 @@ class AIWindow(QWidget):
 		"""Add current video to favorites (play.lst)."""
 		url = self.get_mpv_property("path")
 		if not url:
-			print("DEBUG: No current video URL found to favorite.")
+			self.label.setText("<b style='color:red;'>無法取得影片資訊，加入失敗。</b>")
 			return
 
 		if self.is_in_playlist(url):
-			print(f"DEBUG: URL already in favorites: {url}")
+			self.label.setText("<b style='color:#ffcb00;'>此影片已在收藏清單中。</b>")
 			self.update_heart_ui(True)
 			return
 
@@ -859,10 +859,10 @@ class AIWindow(QWidget):
 		try:
 			with open(path, 'a', encoding='utf-8') as f:
 				f.write(f"\n# {title}\n{url}\n")
-			print(f"DEBUG: Added to favorites: {title} ({url})")
+			self.label.setText(f"<b style='color:#00ff00;'>已成功加入收藏清單！</b><br>{title}")
 			self.update_heart_ui(True)
 		except Exception as e:
-			print(f"Error adding to favorites: {e}")
+			self.label.setText(f"<b style='color:red;'>加入收藏失敗: {e}</b>")
 
 	def pick_random_from_list(self):
 		"""Read play.lst (same dir as this file), ignore lines starting with '#', return one random URL or None."""
