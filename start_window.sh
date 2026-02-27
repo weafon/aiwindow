@@ -13,7 +13,7 @@ rm -f /home/weafon/.gemini/tmp/ec81af70508adebcba9dafaa5d302b0e8893f236fa9994eb1
 # 2. 啟動 mpv 並開啟 IPC 功能 (背景執行)
 echo "啟動窗景播放器 (idle mode)..."
 # 啟動 mpv 空閒模式，之後由 ai_window.py 隨機選取並下達 loadfile 指令
-mpv --idle --fs --loop=inf --input-ipc-server=/tmp/mpvsocket &
+mpv --idle --fs --input-ipc-server=/tmp/mpvsocket &
 MPV_PID=$!
 echo "MPV PID: $MPV_PID"
 
