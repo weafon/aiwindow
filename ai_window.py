@@ -443,6 +443,8 @@ class AIWindow(QWidget):
 		self.is_live = False
 		self.is_minimized = False
 		self.mpv_process = None
+		self.last_path = None
+		self.is_auto_playing = False
 		
 		self.recorder = AudioRecorder()
 		self.player = AudioPlayer()
@@ -450,8 +452,13 @@ class AIWindow(QWidget):
 
 		# 加入 LAN Listener
 		self.lan_listener = LANListener(self)
-		self.lan_listener.command_received.connect(self.send_mpv_command)
+		self.lan_listener.command_received.connect(self.handle_lan_command)
 		self.lan_listener.start()
+
+		# 監控 MPV 狀態的 Timer
+		self.monitor_timer = QTimer(self)
+		self.monitor_timer.timeout.connect(self.monitor_mpv)
+		self.monitor_timer.start(1000)
 		
 		# 2. 建立 UI
 		self.initUI()
@@ -747,6 +754,35 @@ class AIWindow(QWidget):
 		self.input_field.clear()
 		if self.is_minimized: self.set_minimized(False)
 		self.on_exec_cmd("direct_youtube_search:[[" + text + "]]")
+
+	def handle_lan_command(self, cmd_list):
+		"""處理來自 LAN 的指令"""
+		if cmd_list and cmd_list[0] == "loadfile":
+			url = cmd_list[1]
+			print(f"DEBUG: LAN loadfile command for URL: {url}")
+			self.send_to_mpv(url)
+		else:
+			self.send_mpv_command(cmd_list)
+
+	def monitor_mpv(self):
+		"""監控 MPV 播放狀態"""
+		# 1. 檢查路徑變化，更新愛心按鈕
+		path = self.get_mpv_property("path")
+		if path and path != self.last_path:
+			print(f"DEBUG: Path changed to {path}, updating heart UI")
+			self.last_path = path
+			self.update_heart_ui(self.is_in_playlist(path))
+
+		# 2. 檢查是否播放結束 (idle-active 為 True)
+		idle_active = self.get_mpv_property("idle-active")
+		if idle_active is False:
+			# 正在播放中，確保 flag 為 False，這樣結束時才能觸發 auto play
+			self.is_auto_playing = False
+		elif idle_active is True:
+			if not self.is_live and not self.is_auto_playing:
+				print("DEBUG: MPV is idle, triggering auto random play")
+				self.is_auto_playing = True
+				self.play_random_from_list()
 
 	def send_mpv_command(self, cmd_list):
 		"""通用 MPV 指令發送"""
