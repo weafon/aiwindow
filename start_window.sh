@@ -6,6 +6,7 @@ export LC_ALL=en_US.UTF-8
 export PYTHONIOENCODING=utf-8
 export QT_QPA_PLATFORM=xcb
 export SDL_VIDEODRIVER=x11
+cd ~/aiwindow
 # 1. 清理舊的 Socket
 rm -f /tmp/mpvsocket
 rm -f /home/weafon/.gemini/tmp/ec81af70508adebcba9dafaa5d302b0e8893f236fa9994eb1ef1ea1255a8bf83/mpv.log
