@@ -445,6 +445,7 @@ class AIWindow(QWidget):
 		self.mpv_process = None
 		self.last_path = None
 		self.is_auto_playing = False
+		self.mpv_connected = False
 		
 		self.recorder = AudioRecorder()
 		self.player = AudioPlayer()
@@ -768,6 +769,17 @@ class AIWindow(QWidget):
 		"""監控 MPV 播放狀態"""
 		# 1. 檢查路徑變化，更新愛心按鈕
 		path = self.get_mpv_property("path")
+
+		# 檢查 MPV 是否已關閉
+		if path is None:
+			# 如果連不上 IPC 且之前有連上過，且 socket 檔消失了，就結束程式
+			if self.mpv_connected and not os.path.exists(IPC_SOCKET):
+				print("DEBUG: MPV IPC socket disappeared, closing AIWindow.")
+				QApplication.quit()
+				return
+		else:
+			self.mpv_connected = True
+
 		if path and path != self.last_path:
 			print(f"DEBUG: Path changed to {path}, updating heart UI")
 			self.last_path = path
@@ -877,28 +889,71 @@ class AIWindow(QWidget):
 			print(f"Error reading play.lst: {e}")
 		return False
 
-	def toggle_favorite(self):
-		"""Add current video to favorites (play.lst)."""
-		url = self.get_mpv_property("path")
-		if not url:
-			self.label.setText("<b style='color:red;'>無法取得影片資訊，加入失敗。</b>")
-			return
-
-		if self.is_in_playlist(url):
-			self.label.setText("<b style='color:#ffcb00;'>此影片已在收藏清單中。</b>")
-			self.update_heart_ui(True)
-			return
-
-		title = self.get_mpv_property("media-title") or "Unknown Title"
+	def add_to_playlist(self, url, title):
+		"""Add a URL and its title to play.lst."""
 		path = os.path.join(os.path.dirname(__file__), "play.lst")
-
 		try:
 			with open(path, 'a', encoding='utf-8') as f:
 				f.write(f"\n# {title}\n{url}\n")
-			self.label.setText(f"<b style='color:#00ff00;'>已成功加入收藏清單！</b><br>{title}")
-			self.update_heart_ui(True)
+			return True
 		except Exception as e:
-			self.label.setText(f"<b style='color:red;'>加入收藏失敗: {e}</b>")
+			print(f"Error adding to playlist: {e}")
+			return False
+
+	def remove_from_playlist(self, url):
+		"""Remove a URL and its preceding title comment from play.lst."""
+		path = os.path.join(os.path.dirname(__file__), "play.lst")
+		if not os.path.exists(path): return False
+		try:
+			with open(path, 'r', encoding='utf-8') as f:
+				lines = f.readlines()
+
+			target_url = url.strip()
+			to_remove = set()
+			for i, line in enumerate(lines):
+				if line.strip() == target_url:
+					to_remove.add(i)
+					# Check upwards for title
+					j = i - 1
+					while j >= 0 and not lines[j].strip():
+						j -= 1
+					if j >= 0 and lines[j].strip().startswith('#'):
+						# Found a title, remove it and the blank lines in between
+						for k in range(j, i):
+							to_remove.add(k)
+						# Also remove one blank line above the title if it exists
+						if j > 0 and not lines[j-1].strip():
+							to_remove.add(j-1)
+
+			new_lines = [l for i, l in enumerate(lines) if i not in to_remove]
+
+			with open(path, 'w', encoding='utf-8') as f:
+				f.writelines(new_lines)
+			return True
+		except Exception as e:
+			print(f"Error removing from playlist: {e}")
+			return False
+
+	def toggle_favorite(self):
+		"""Add or remove current video from favorites (play.lst)."""
+		url = self.get_mpv_property("path")
+		if not url:
+			self.label.setText("<b style='color:red;'>無法取得影片資訊。</b>")
+			return
+
+		if self.is_in_playlist(url):
+			if self.remove_from_playlist(url):
+				self.label.setText("<b style='color:#ffcb00;'>已從收藏清單中移除。</b>")
+				self.update_heart_ui(False)
+			else:
+				self.label.setText("<b style='color:red;'>移除失敗。</b>")
+		else:
+			title = self.get_mpv_property("media-title") or "Unknown Title"
+			if self.add_to_playlist(url, title):
+				self.label.setText(f"<b style='color:#00ff00;'>已成功加入收藏清單！</b><br>{title}")
+				self.update_heart_ui(True)
+			else:
+				self.label.setText("<b style='color:red;'>加入收藏失敗。</b>")
 
 	def pick_random_from_list(self):
 		"""Read play.lst (same dir as this file), ignore lines starting with '#', return one random URL or None."""
