@@ -3,7 +3,7 @@
   "name": "傳送網址到遠端撥放器",
   "version": "1.2",
   "description": "一鍵將 Chrome 當前分頁的網址傳送至遠端 Ubuntu 伺服器，透過 MPV 進行播放。支援自動錯誤通知與連線檢查。",
-  "permissions": ["activeTab", "notifications"], // 加入 notifications
+  "permissions": ["activeTab", "notifications", "scripting"], // 加入 notifications
   "action": {
     "default_title": "傳送到遠端撥放器",
     "default_icon": "icon.png"
