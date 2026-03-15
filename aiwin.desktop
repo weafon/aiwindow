@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=aiwin
+Exec=/home/weafon/aiwindow/start_window.sh
+Exec=gnome-terminal -- /bin/bash -c "/home/weafon/aiwindow/start_window.sh; echo '執行完畢，請按 Enter 關閉...'; read -t 10"
+Icon=/home/weafon/aiwindow/start_window.sh
+Type=Application
+Terminal=true
