@@ -4,6 +4,7 @@ import signal
 import json
 import socket
 import subprocess
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # 修復編碼問題，確保 stdout 和 stderr 使用 UTF-8
 if hasattr(sys.stdout, 'reconfigure'):
@@ -436,6 +437,62 @@ class LANListener(QThread):
 	def stop(self):
 		self.running = False
 
+class MPVRequestHandler(BaseHTTPRequestHandler):
+	def _set_cors_headers(self):
+		self.send_header('Access-Control-Allow-Origin', '*')
+		self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+		self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+
+	def do_OPTIONS(self):
+		self.send_response(204)
+		self._set_cors_headers()
+		self.end_headers()
+
+	def do_POST(self):
+		if self.path == '/mpv':
+			content_length = int(self.headers['Content-Length'])
+			post_data = self.rfile.read(content_length)
+			try:
+				payload = json.loads(post_data.decode('utf-8'))
+				if "command" in payload:
+					self.server.listener.command_received.emit(payload["command"])
+
+				self.send_response(200)
+				self._set_cors_headers()
+				self.send_header('Content-Type', 'application/json')
+				self.end_headers()
+				self.wfile.write(json.dumps({"status": "success"}).encode('utf-8'))
+			except Exception as e:
+				self.send_response(400)
+				self._set_cors_headers()
+				self.end_headers()
+				self.wfile.write(str(e).encode('utf-8'))
+		else:
+			self.send_response(404)
+			self.end_headers()
+
+	def log_message(self, format, *args):
+		# Suppress default logging to stderr
+		pass
+
+class HTTPListener(QThread):
+	command_received = pyqtSignal(list)
+
+	def __init__(self, parent=None):
+		super().__init__(parent)
+		self.httpd = None
+
+	def run(self):
+		server_address = ('0.0.0.0', 9999)
+		self.httpd = HTTPServer(server_address, MPVRequestHandler)
+		self.httpd.listener = self
+		print("DEBUG: HTTP Listener started on port 9999")
+		self.httpd.serve_forever()
+
+	def stop(self):
+		if self.httpd:
+			self.httpd.shutdown()
+
 class AIWindow(QWidget):
 	def __init__(self):
 		super().__init__()
@@ -455,6 +512,11 @@ class AIWindow(QWidget):
 		self.lan_listener = LANListener(self)
 		self.lan_listener.command_received.connect(self.handle_lan_command)
 		self.lan_listener.start()
+
+		# 加入 HTTP Listener
+		self.http_listener = HTTPListener(self)
+		self.http_listener.command_received.connect(self.handle_lan_command)
+		self.http_listener.start()
 
 		# 監控 MPV 狀態的 Timer
 		self.monitor_timer = QTimer(self)
@@ -1035,6 +1097,9 @@ class AIWindow(QWidget):
 		if hasattr(self, 'lan_listener') and self.lan_listener:
 			self.lan_listener.stop()
 			self.lan_listener.wait()
+		if hasattr(self, 'http_listener') and self.http_listener:
+			self.http_listener.stop()
+			self.http_listener.wait()
 		if self.live_session:
 			self.live_session.stop()
 			self.live_session.wait()
