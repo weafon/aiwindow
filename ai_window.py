@@ -403,10 +403,10 @@ class LANListener(QThread):
 		server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		try:
-			server_socket.bind(('0.0.0.0', 9998))
+			server_socket.bind(('0.0.0.0', 9997))
 			server_socket.listen(5)
 			server_socket.settimeout(1.0)
-			print("DEBUG: LAN Listener started on port 9998")
+			print("DEBUG: LAN Listener started on port 9997")
 		except Exception as e:
 			print(f"DEBUG: LAN Listener failed to start: {e}")
 			return
@@ -483,10 +483,10 @@ class HTTPListener(QThread):
 		self.httpd = None
 
 	def run(self):
-		server_address = ('0.0.0.0', 9999)
+		server_address = ('0.0.0.0', 9998)
 		self.httpd = HTTPServer(server_address, MPVRequestHandler)
 		self.httpd.listener = self
-		print("DEBUG: HTTP Listener started on port 9999")
+		print("DEBUG: HTTP Listener started on port 9998")
 		self.httpd.serve_forever()
 
 	def stop(self):
