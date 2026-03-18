@@ -39,6 +39,17 @@ AI Window is a minimalist, transparent window assistant that combines real-time 
    ```
    *This script will automatically clear previous sockets, start MPV in the background with a default rainy scene, launch the AI UI, and clean up processes upon exit.*
 
+## 🖥️ Desktop Shortcut (Ubuntu)
+
+The `aiwin.desktop` file allows you to launch the AI Window directly from your Ubuntu desktop with a single click.
+
+1.  **Configure Paths**: Open `aiwin.desktop` and update the `Exec` and `Icon` paths to match your local project directory (e.g., replace `/home/weafon/aiwindow/` with your actual path).
+2.  **Deployment**: Copy the file to your desktop:
+    ```bash
+    cp aiwin.desktop ~/Desktop/
+    ```
+3.  **Permissions**: Right-click the file on your desktop and select **"Allow Launching"**.
+
 ## 🎙️ Usage
 
 - **Voice Command**: Click the 🎤 button to start a Live session.
@@ -48,6 +59,21 @@ AI Window is a minimalist, transparent window assistant that combines real-time 
   - *"帮我换成日本街道的风景"* (Support for Traditional Chinese).
 - **Text Entry**: You can also type commands into the input field at the bottom.
 - **Exit**: Click the '✕' or press `Esc`.
+
+## 🌐 Chrome Extension (send2mpv)
+
+The `send2mpv` extension allows you to send any YouTube video you are currently watching in Chrome directly to the AI Window for remote playback.
+
+1.  **Installation**:
+    - Open Chrome and navigate to `chrome://extensions/`.
+    - Enable **"Developer mode"** in the top right corner.
+    - Click **"Load unpacked"** and select the `send2mpv` directory from this project.
+2.  **Configuration**:
+    - Open `send2mpv/background.js`.
+    - Update `targetIp` with the IP address of the machine running the AI Window.
+    - (Optional) Update `targetPort` if you changed the default port (9998).
+3.  **Usage**:
+    - Click the extension icon while on a YouTube video page to send it to the AI Window. The local video will automatically pause.
 
 ## ⚙️ Technical Details
 
